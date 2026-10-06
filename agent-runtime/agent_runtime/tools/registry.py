@@ -1,5 +1,6 @@
 """Only registered implementations can cross the tool execution boundary."""
 from dataclasses import dataclass
+from enum import Enum
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 from .web_search import web_search
@@ -33,9 +34,21 @@ TOOL_REGISTRY = {
 }
 
 
+class ToolDecision(str, Enum):
+    ALLOW = "allow"
+    DENY = "deny"
+    REQUIRE_CONFIRMATION = "require_confirmation"
+
+
+def check_tool_policy(config, tool_id):
+    if not config.enabled or tool_id in config.denied or tool_id not in config.allowed:
+        return ToolDecision.DENY
+    if tool_id in config.require_confirmation:
+        return ToolDecision.REQUIRE_CONFIRMATION
+    return ToolDecision.ALLOW
+
+
 def resolve_tools(config, registry=None):
     registry = TOOL_REGISTRY if registry is None else registry
-    if not config.enabled:
-        return []
-    executable = set(config.allowed) - set(config.denied) - set(config.require_confirmation)
-    return [registry[key] for key in sorted(executable) if key in registry]
+    return [registry[key] for key in sorted(set(config.allowed))
+            if key in registry and check_tool_policy(config, key) != ToolDecision.DENY]

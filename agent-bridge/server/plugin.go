@@ -26,11 +26,12 @@ import (
 // Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
 type Plugin struct {
 	plugin.MattermostPlugin
-	agents      *agent.Service
-	chatCtx     context.Context
-	chatCancel  context.CancelFunc
-	chatQueue   chan *model.Post
-	chatWorkers sync.WaitGroup
+	agents        *agent.Service
+	chatCtx       context.Context
+	chatCancel    context.CancelFunc
+	chatQueue     chan *model.Post
+	approvalQueue chan *pendingApproval
+	chatWorkers   sync.WaitGroup
 
 	// kvstore is the client used to read/write KV records for this plugin.
 	kvstore kvstore.KVStore
@@ -111,6 +112,7 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 func (p *Plugin) startChat() {
 	p.chatCtx, p.chatCancel = context.WithCancel(context.Background())
 	p.chatQueue = make(chan *model.Post, 64)
+	p.approvalQueue = make(chan *pendingApproval, 64)
 	for i := 0; i < 4; i++ {
 		p.chatWorkers.Add(1)
 		go func() {
@@ -119,10 +121,12 @@ func (p *Plugin) startChat() {
 				select {
 				case <-p.chatCtx.Done():
 					return
+				case approval := <-p.approvalQueue:
+					p.processApproval(approval)
 				case post := <-p.chatQueue:
 					cfg := p.getConfiguration()
 					store := agent.NewKVAgentStore(p.API)
-					o := &orchestrator.Orchestrator{Resolver: &orchestrator.Resolver{API: p.API, Agents: store}, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: &modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}, Messenger: &mattermost.Messenger{API: p.API}, Logger: p.API}
+					o := &orchestrator.Orchestrator{Resolver: &orchestrator.Resolver{API: p.API, Agents: store}, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: &modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}, Messenger: &mattermost.Messenger{API: p.API}, Logger: p.API, Approvals: p}
 					ctx, cancel := context.WithTimeout(p.chatCtx, 90*time.Second)
 					if err := o.HandleMessage(ctx, post); err != nil {
 						p.API.LogError("Agent message processing failed", "post_id", post.Id)
@@ -132,6 +136,21 @@ func (p *Plugin) startChat() {
 			}
 		}()
 	}
+	p.chatWorkers.Add(1)
+	go func() {
+		defer p.chatWorkers.Done()
+		p.recoverApprovalDecisions()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-p.chatCtx.Done():
+				return
+			case <-ticker.C:
+				p.expireApprovals()
+			}
+		}
+	}()
 }
 func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *model.Post) {
 	if post == nil || post.IsSystemMessage() || post.GetProp(model.PostPropsFromBot) != nil || post.GetProp("agentbridge_generated") != nil || p.chatQueue == nil {

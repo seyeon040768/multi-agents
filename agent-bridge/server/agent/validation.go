@@ -32,6 +32,22 @@ func Validate(a *Agent) error {
 	if strings.TrimSpace(a.Prompts.Identity) == "" {
 		return &ValidationError{"INVALID_PROMPT", "identity prompt is required"}
 	}
+	denied := map[string]bool{}
+	allowed := map[string]bool{}
+	for _, id := range a.Tools.Denied {
+		denied[id] = true
+	}
+	for _, id := range a.Tools.Allowed {
+		if denied[id] {
+			return &ValidationError{"INVALID_TOOL_POLICY", "allowed and denied tools must not overlap"}
+		}
+		allowed[id] = true
+	}
+	for _, id := range a.Tools.RequireConfirmation {
+		if denied[id] || !allowed[id] {
+			return &ValidationError{"INVALID_TOOL_POLICY", "confirmation tools must be allowed and must not be denied"}
+		}
+	}
 	if !modelCatalog[a.Model.Provider][a.Model.Name] {
 		return &ValidationError{"INVALID_MODEL", "select a registered provider and model"}
 	}

@@ -21,15 +21,23 @@ Gemini는 Vertex AI가 아닌 Gemini Developer API를 사용한다.
 
 ## 실행
 
-Python 3.12 이상 또는 Docker가 필요하다. `.env.example`을 `.env`로 복사하고 사용할 Provider의 키와
-임의의 긴 `AGENT_RUNTIME_TOKEN`을 설정한다. 이미 `.env`가 있다면 덮어쓰지 않는다.
+Python 3.12 이상 또는 Docker가 필요하다. 모든 Provider·검색 API 키와 런타임 설정은
+저장소 루트 `~/multi-agents/.env`에서 관리한다. `agent-runtime/.env`는 사용하지 않는다.
+처음 설정할 때만 아래 명령으로 예시를 복사한다. 기존 루트 `.env`는 덮어쓰지 않는다.
 `.env`는 Git 및 Docker build context에서 제외된다.
 
 ```bash
-cd agent-runtime
-cp -n .env.example .env
-# .env를 편집한 후:
-docker compose up -d --build
+cd ~/multi-agents
+cp -n agent-runtime/.env.example .env
+# 루트 .env를 편집한 후:
+docker compose --env-file .env -f agent-runtime/compose.yaml up -d --build
+```
+
+키를 변경하면 컨테이너를 재생성해 반영한다.
+
+```bash
+cd ~/multi-agents
+docker compose --env-file .env -f agent-runtime/compose.yaml up -d --force-recreate
 ```
 
 이 저장소의 Mattermost 컨테이너가 사용하는 `docker_default` 네트워크에 실행 서비스를 연결한다.
@@ -39,12 +47,12 @@ Mattermost 컨테이너에서 런타임 URL은 `http://agent-runtime:8000`이다
 컨테이너 내부의 localhost는 호스트나 다른 컨테이너가 아니다.
 원격 배포는 HTTPS 또는 신뢰하는 사설 네트워크에서 실행한다.
 
-Docker 없이 실행하려면 환경 변수를 별도로 설정한 뒤:
+Docker 없이 실행할 때도 저장소 루트 `.env`를 읽는다. 아래 명령은 `agent-runtime` 디렉터리에서 실행한다:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
-.venv/bin/uvicorn agent_runtime.app:app --host 127.0.0.1 --port 8000
+.venv/bin/uvicorn agent_runtime.app:app --env-file ../.env --host 127.0.0.1 --port 8000
 ```
 
 서비스는 인증 token이 없으면 시작을 거부한다. `/healthz`는 연결 확인용이고
@@ -138,8 +146,8 @@ Go가 KV Agent의 `tools` 전체를 `/v1/generate`에 전달한다. 설정 ID와
 
 네 Provider 모두 LangChain `bind_tools`와 동일한 LangGraph 실행 경로를 사용한다.
 실제 모델/로컬 모델 자체도 function calling을 지원해야 한다.
-`enabled=false`는 Tool을 노출하지 않는다. `allowed - denied - require_confirmation`과 Registry의
-교집합만 bind하며 policy_check와 실행 직전에 재검사한다. 미등록 Tool 및 승인 필요 Tool은 실행하지 않는다.
+`enabled=false`는 Tool을 노출하지 않는다. `allowed - denied`와 Registry의 교집합을 bind하며 policy_check와 실행 직전에 재검사한다.
+승인 필요 Tool도 모델에 노출되지만 interrupt 이후 사람의 승인 없이는 실행하지 않는다. 미등록 Tool은 차단한다.
 
 그래프: `START → generate → policy_check → tools → generate → END`.
 Tool 실패/잘못된 인자/정책 차단은 비밀 정보를 제거한 ToolMessage로 반환하며 최종 답변을 다시 요청한다.
@@ -148,7 +156,7 @@ Tool 실패/잘못된 인자/정책 차단은 비밀 정보를 제거한 ToolMes
 호출 및 결과는 체크포인트에 보존하며 메시지 창을 자를 때 Tool call/result 쌍을 분리하지 않는다.
 Provider metadata를 보존해 Gemini thought signature 등의 후속 호출 정보를 유지한다.
 
-`web-search`를 사용하려면 `agent-runtime/.env`에 `BRAVE_SEARCH_API_KEY`를 설정하고 런타임을 재생성한다.
+`web-search`를 사용하려면 저장소 루트 `~/multi-agents/.env`에 `BRAVE_SEARCH_API_KEY`를 설정하고 런타임을 재생성한다.
 Agent KV에는 검색 키도 저장하지 않는다. 검색 서비스는 모델 Provider와 독립적이다.
 설정하지 않으면 검색 실패 ToolMessage가 반환된다. file-reader/pdf-reader/code-executor/vector-search는
 UI의 향후 설정 항목으로 남아 있으며 Registry에 없으므로 실행되지 않는다.
@@ -157,3 +165,51 @@ UI의 향후 설정 항목으로 남아 있으며 Registry에 없으므로 실�
 인자 값·전체 결과·SDK 예외 본문·credential은 기록하지 않는다.
 현재 Tool은 조회/검증용이다. 미완료 요청 재시도는 일부 Tool을 다시 실행할 수 있으며,
 향후 외부 쓰기 Tool에는 별도 멱등성/승인 처리가 필요하다.
+
+
+## 사람 승인 / interrupt / resume
+
+정책은 ALLOW / DENY / REQUIRE_CONFIRMATION이다. denied가 우선하며, 확인 대상도 allowed에 있어야 한다.
+모달은 도구마다 `가능 · 자동 실행`, `불가능`, `허가 필요` 중 하나만 선택한다.
+저장 계약에서는 허가 필요 도구가 allowed와 require_confirmation에 함께 존재한다. 이것은 중복 정책이 아닌,
+허용 집합에 대한 승인 조건이다. allowed/denied 중복과 허용되지 않은 confirmation은 Go validation이 거부한다.
+
+그래프: `generate → policy_check → [approval interrupt →] tools → generate`.
+한 모델 응답의 보호된 호출들을 하나의 승인 요청으로 묶고, 각 도구 ID와 정확한 JSON 인자를 모두 표시한다.
+인자를 생략해서 표시한 요청은 실행하지 않는다. 확인 없이 가능한 호출도 같은 배치라면 승인 결정 뒤 처리한다.
+승인 후 모델이 인자를 다시 만들지 않고 checkpoint의 동일 호출을 실행한다.
+거절/만료는 안전한 ToolMessage로 반환한다. 기존 10회 호출 제한과 Provider 공통 경로를 유지한다.
+
+`POST /v1/generate`는 중단 시 `status=interrupted`, `interrupt.approval_id/calls/created_at/expires_at`를 반환한다.
+`POST /v1/resume`은 agent_id, root_post_id, approval_id, decision(approve/reject/expire), **최신** tools 설정을 받는다.
+두 API는 동일한 Bearer 인증을 요구한다. 브라우저에서 런타임을 직접 호출하지 않는다.
+Runtime은 동일 Agent/Thread의 pending interrupt만 재개하며 완료된 승인 ID를 다시 실행하지 않는다.
+승인 대기 중 같은 Thread의 다른 질문은 409로 거부하고 pending state를 보존한다.
+
+Go Plugin은 `approval:v1:<approval_id>`에 요청자, 원래 post/channel/thread, 도구 호출/인자,
+PENDING/APPROVED/REJECTED/EXPIRED/EXECUTED/FAILED, 결정자와 시각을 저장한다.
+30분 후 만료되며 버튼 클릭 시 즉시 검사하고 1분 간격 sweep도 실행한다.
+Mattermost 11.7에 맞춰 attachment action 버튼을 사용한다. 새 Blocks API로 옮기는 것은 서버 업그레이드 후 가능하다.
+버튼 context에는 opaque approval_id만 넣는다. Go는 Mattermost의 인증 헤더와 action.user_id 일치,
+원래 승인 post/channel, 현재 채널 소속, 요청자 또는 system_admin 권한을 검증한다.
+PENDING에서 결정 상태로 바꾸는 KV CAS를 통과한 요청만 큐에 들어간다. 콜백은 접수 결과를 즉시 반환한다.
+워커는 승인 ID별 cluster mutex와 최신 KV 상태 재확인으로 복구 큐의 중복 작업도 차단한다.
+기존 버튼을 제거하고 결과 상태 및 Bot Thread 답변을 갱신한다.
+
+SQLite와 Plugin KV가 유지되면 재시작 후에도 PENDING 승인 버튼으로 재개할 수 있다.
+Plugin 시작 시 접수됐지만 완료되지 않은 결정도 복구한다. Runtime이 이미 interrupt를 소비한 뒤
+장애가 난 경우 자동으로 Tool을 다시 실행하지 않고 FAILED로 표시한다. 외부 쓰기 Tool의 정확히 한 번 실행은
+별도의 도구별 멱등성 구현이 필요하다. 현재 구현 도구는 Debug Echo와 Web Search이며 code-executor는 아직 없다.
+승인 게시 실패와 모델/게시 응답 유실에 대한 완전한 outbox 복구는 후속 범위다.
+로그에는 요청자/결정자/Agent/도구 ID/시각/상태만 기록하고 Tool 인자 값이나 결과 전체를 기록하지 않는다.
+
+확인 방법:
+1. `/agent list`에서 Agent 설정 → Tools → Debug Echo를 `허가 필요`로 저장한다.
+2. Bot DM에서 `debug_echo 도구로 "승인 테스트"를 반환해줘`라고 보낸다.
+3. JSON 인자가 포함된 승인 메시지에서 승인한다. 버튼이 제거되고 같은 Thread에 최종 답변이 나와야 한다.
+4. 새 Thread에서 같은 요청 후 거절한다. Tool은 실행되지 않고 거절 결과를 토대로 답변해야 한다.
+5. 다른 사용자 클릭은 403, 중복 클릭은 409이며 만료된 요청은 실행되지 않는다.
+6. 승인 대기 상태에서 Plugin/runtime을 재시작한 뒤 기존 버튼으로 다시 확인한다.
+
+자동 테스트: `pytest -q`(agent-runtime), `go test -race ./server/...`(agent-bridge),
+`npm run check-types`, `npm run build`, `make dist`, `git diff --check`.

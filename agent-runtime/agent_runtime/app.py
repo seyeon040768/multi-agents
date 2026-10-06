@@ -9,9 +9,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from .graph import build_graph, invoke_turn
+from .graph import build_graph, invoke_turn, resume_turn, ApprovalPending
 from .memory import ThreadLocks
-from .schema import GenerateRequest, GenerateResponse
+from .schema import GenerateRequest, ResumeRequest
 
 logger = logging.getLogger("agent_runtime")
 
@@ -26,6 +26,12 @@ def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_f
     async def lifespan(_app):
         if not secret:
             raise RuntimeError("AGENT_RUNTIME_TOKEN must be configured")
+        tool_logger = logging.getLogger("agent_runtime.tools")
+        tool_logger.setLevel(logging.INFO)
+        if not tool_logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+            tool_logger.addHandler(handler)
         nonlocal runner
         async with AsyncExitStack() as stack:
             if graph is None:
@@ -57,7 +63,8 @@ def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_f
     async def health():
         return {"status": "ok" if runner is not None else "degraded"}
 
-    @app.post("/v1/generate", response_model=GenerateResponse, dependencies=[Depends(authenticate)])
+    @app.post("/v1/resume", dependencies=[Depends(authenticate)])
+    @app.post("/v1/generate", dependencies=[Depends(authenticate)])
     async def generate(request: Request):
         # Limit before JSON/Pydantic decoding, including chunked requests.
         body = bytearray()
@@ -66,7 +73,8 @@ def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_f
             if len(body) > 512 * 1024:
                 raise HTTPException(413, "request too large")
         try:
-            req = GenerateRequest.model_validate_json(body)
+            resuming = request.url.path.endswith("/resume")
+            req = (ResumeRequest if resuming else GenerateRequest).model_validate_json(body)
         except ValueError:
             raise HTTPException(400, "invalid request") from None
 
@@ -75,7 +83,7 @@ def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_f
                 raise HTTPException(503, "checkpoint unavailable")
             async with locks.hold(req.thread_id):
                 async with slots:
-                    return await invoke_turn(runner, req)
+                    return await (resume_turn(runner, req) if resuming else invoke_turn(runner, req))
 
         async def disconnected():
             while True:
@@ -93,6 +101,8 @@ def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_f
             if task not in done:
                 raise HTTPException(504, "generation timed out")
             return task.result()["response"]
+        except ApprovalPending:
+            raise HTTPException(409, "approval pending or already processed") from None
         except HTTPException:
             raise
         except (sqlite3.Error, OSError) as exc:
@@ -100,7 +110,7 @@ def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_f
             raise HTTPException(503, "checkpoint unavailable") from None
         except Exception as exc:
             # Do not log SDK exception text: it can contain credentials or payloads.
-            logger.error("generation failed provider=%s error_type=%s", req.provider, type(exc).__name__)
+            logger.error("generation failed provider=%s error_type=%s", getattr(req, "provider", "resume"), type(exc).__name__)
             raise HTTPException(502, "generation failed") from None
         finally:
             task.cancel()

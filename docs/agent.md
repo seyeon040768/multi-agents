@@ -395,7 +395,7 @@ Provider 환경 변수·실행 방법·Plugin 설정은 [실행 서비스 README
 
 ## 14. 실행 서비스 설정 및 현재 배포
 
-Provider 인증 정보는 `agent-runtime/.env` 등 실행 서비스의 환경 변수로 설정한다.
+Provider 인증 정보는 저장소 루트 `~/multi-agents/.env`에서 설정한다. Docker Compose는 `../.env`를 읽고, 로컬 uvicorn 실행은 `--env-file ../.env`를 사용한다.
 Agent KV에는 API Key를 저장하지 않는다. `.env`는 Git 및 Docker build context에서 제외한다.
 
 | 용도 | 설정 |
@@ -499,3 +499,49 @@ Plugin 재활성화 후 연결 정보 유지까지 확인했으며 재활성화 
 checkpoint의 `human → ai(tool_calls=debug_echo) → tool(success) → ai(final)`를 확인했다.
 실제 검색 서비스 호출은 검색 키 설정 후 확인해야 한다. Mattermost 화면에서 Tool 질문을 보낸 뒤
 Bot Thread 답변을 확인하는 운영 검증도 별도이며, 자동 테스트는 설정 전달과 Bot Thread 게시 경로를 검증한다.
+
+모든 API 키와 런타임 설정은 저장소 루트 `.env`로 통일했다. `agent-runtime/.env`는 실행 설정에서 참조하지 않는다. 키 변경 후 runtime 컨테이너를 재생성한다.
+
+
+### 검색 도구 미호출 수정
+
+이전 MVP의 PromptBuilder에 남아 있던 “Tools 및 외부 검색을 사용할 수 없다”는 안내를 제거했다.
+현재 UTC 날짜, 실제 runtime이 제공한 Tool만 사용하도록 하는 안내, 요청된 검색 수행 및 성공 결과 없는
+검색 주장 금지 문구로 바꿨다. Python은 정책을 통과한 함수 이름을 System Prompt에 추가하며
+Tool INFO 로그를 실제 서비스 로그에 기록한다. 권한 검사는 기존 코드 경계에서 그대로 유지한다.
+
+사용자가 보고한 2026년 KAIST 대학원 모집 일정 질문을 수정된 Go Prompt와 Gemini 3.1 Flash-Lite로
+runtime에 전달했다. HTTP 200, web_search 호출, 성공한 검색 결과 5개, 출처 링크가 포함된 최종 답변,
+checkpoint human → ai → tool → ai를 확인했다. 운영 검증용 별도 Thread였으며 Mattermost에 메시지를 작성하지 않았다.
+Go race 테스트 및 배포 빌드, Python 46개 테스트, git diff --check 통과 후 로컬 서비스에 반영했다.
+
+
+## 보호된 Tool의 사람 승인 (2026-10-07)
+
+- Provider 공통 ALLOW / DENY / REQUIRE_CONFIRMATION 정책을 적용했다. 승인 필요 Tool도 bind하고,
+  실제 실행 직전 LangGraph interrupt로 정지한다. denied가 항상 우선한다.
+- Tool call/args, approval ID, 30분 만료, 재개에 필요한 credential 없는 요청 context를 checkpoint에 보존한다.
+- 인증된 `/v1/resume`이 Command(resume)으로 같은 호출을 재개한다. 거절/만료는 ToolMessage로 전달한다.
+- Go는 approval:v1:<id> KV에 승인 레코드를 보관하며 요청자 또는 채널에 속한 system_admin만 결정할 수 있다.
+  인증 헤더/action actor, 원래 post/channel, 만료를 검사하고 CAS로 중복 결정을 차단한다.
+- Mattermost 11.7에서 동작하는 attachment 승인/거절 버튼을 사용한다. 콜백은 즉시 접수하며 워커가
+  버튼 제거, 실제 Tool 결과 상태, 원래 Thread의 Bot 답변을 갱신한다.
+- 1분 만료 sweep, 접수된 결정의 Plugin 재시작 복구, Tool 실행 직전 최신 정책 재검사를 추가했다.
+- 모달의 세 독립 체크리스트를 도구별 단일 정책 선택 메뉴로 바꿨다. 허가 필요는 저장 계약에서
+  allowed + require_confirmation으로 표현하며, allowed/denied 충돌은 validation에서 거부한다.
+- Debug Echo/Web Search로 승인 흐름을 사용할 수 있다. code-executor, 파일/PDF 읽기, Multi-Agent는 추가하지 않았다.
+- 이미 소비된 interrupt를 장애 복구 때 자동 재실행하지 않는다. 외부 쓰기 도구의 정확히 한 번 실행,
+  승인 게시 outbox 및 context summarization은 별도 후속 작업이다.
+
+검증: Python 61개 테스트(4 Provider mock 승인/거절, SQLite 재연결, 동일 인자,
+권한 변경, 만료, 중복, 연속 승인과 10회 제한), Go race 테스트(인증/권한, CAS 경쟁,
+만료/복구, 버튼 갱신과 Bot Thread 답변) 통과. 실행/수동 확인 방법은
+[Runtime README](../agent-runtime/README.md#사람-승인--interrupt--resume)를 참고한다.
+
+실제 runtime 검증에서도 Gemini 3.1 Flash-Lite로 Debug Echo 승인을 요청하고 runtime 컨테이너를
+재생성한 뒤 `/v1/resume` HTTP 200 / EXECUTED, 중복 재개 HTTP 409를 확인했다.
+checkpoint는 human → ai(tool call) → tool(success) → ai(final)이며 동일 인자가 한 번 실행됐다.
+첫 검증에서는 최종 모델 호출이 일시적인 Google 503으로 실패했으나, 도구 재실행 없이 결과를 보존했다.
+별도 새 요청의 전체 승인 재개는 성공했다. 검증용 checkpoint만 정리했다.
+실제 Mattermost 화면에서 버튼을 누르는 수동 확인은 README의 절차로 진행할 수 있다.
+`npm run check-types`, `npm run build`, `make dist`, `git diff --check`도 통과했으며 로컬 서비스에 반영했다.

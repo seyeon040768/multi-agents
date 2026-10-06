@@ -1,7 +1,7 @@
 services:
   agent-runtime:
     build: .
-    env_file: .env
+    env_file: ../.env
     volumes:
       - checkpoints:/app/data
     ports:

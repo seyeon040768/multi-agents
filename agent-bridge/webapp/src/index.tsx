@@ -19,9 +19,6 @@ const toolOptions = [
 ];
 type ChecklistOption = {id: string; name: string; description: string};
 const checklistOptions: Record<string, ChecklistOption[]> = {
-    'tools.allowed': toolOptions,
-    'tools.denied': toolOptions,
-    'tools.require_confirmation': toolOptions,
     'context.sources': [
         {id: 'project', name: '프로젝트', description: '프로젝트에서 제공된 정보를 사용합니다'},
         {id: 'conversation', name: '대화', description: '현재 대화의 정보를 사용합니다'},
@@ -52,6 +49,22 @@ function Checklist({field, value, disabled, change}: {field: string; value: stri
         <input type='checkbox' checked={value.includes(item.id)} disabled={disabled} onChange={(e) => change(e.target.checked ? [...value, item.id] : value.filter((id) => id !== item.id))}/>
         <span>{item.name}<small>{item.description}</small></span>
     </label>)}</div>;
+}
+function ToolPolicy({value, disabled, change}: {value: {enabled: boolean; allowed: string[]; denied: string[]; require_confirmation: string[]}; disabled: boolean; change: (path: string, value: any) => void}) {
+    const ids = [...new Set([...toolOptions.map((item) => item.id), ...(value.allowed || []), ...(value.denied || []), ...(value.require_confirmation || [])])];
+    const selectPolicy = (id: string, policy: string) => {
+        const allowed = (value.allowed || []).filter((item) => item !== id);
+        const denied = (value.denied || []).filter((item) => item !== id);
+        const confirmation = (value.require_confirmation || []).filter((item) => item !== id);
+        if (policy === 'deny') {denied.push(id);} else {allowed.push(id);}
+        if (policy === 'confirm') {confirmation.push(id);}
+        change('tools', {...value, allowed, denied, require_confirmation: confirmation});
+    };
+    return <div className='agent-tool-options'><p>도구마다 하나의 정책을 선택하세요. 승인 필요 도구는 승인을 받은 뒤 실행됩니다.</p>{ids.map((id) => {
+        const item = toolOptions.find((option) => option.id === id);
+        const policy = value.denied?.includes(id) || !value.allowed?.includes(id) ? 'deny' : value.require_confirmation?.includes(id) ? 'confirm' : 'allow';
+        return <label key={id} className='agent-tool-option'><span>{item?.name || id}<small>{item?.description || '기존 설정에 포함된 도구'}</small></span><select aria-label={`${item?.name || id} 실행 정책`} disabled={disabled} value={policy} onChange={(e) => selectPolicy(id, e.target.value)}><option value='allow'>가능 · 자동 실행</option><option value='deny'>불가능</option><option value='confirm'>허가 필요</option></select></label>;
+    })}</div>;
 }
 const requiredFields = new Set(['id', 'name', 'model.name', 'prompts.identity']);
 const hints: Record<string, string> = {
@@ -97,6 +110,7 @@ const hints: Record<string, string> = {
 function Fields({value, path = '', change, editing, parentDisabled = false}: {value: any; path?: string; change: (path: string, value: any) => void; editing: boolean; parentDisabled?: boolean}) {
     return <>{Object.entries(value).map(([key, val]) => {
         const field = path ? `${path}.${key}` : key;
+        if (path === 'tools' && ['allowed', 'denied', 'require_confirmation'].includes(key)) {return key === 'allowed' ? <ToolPolicy key='tool-policy' value={value} disabled={parentDisabled || value.enabled === false} change={change}/> : null;}
         const groupDisabled = parentDisabled || (value.enabled === false && key !== 'enabled');
         if (val && typeof val === 'object' && !Array.isArray(val) && key !== 'metadata') {
             return <details key={field} open={['role', 'model', 'prompts', 'tools'].includes(field)}><summary>{key.replace(/_/g, ' ')}</summary><Fields value={val} path={field} change={change} editing={editing} parentDisabled={groupDisabled}/></details>;
@@ -157,9 +171,9 @@ function App({store}: {store: Store}) {
             if (!modelCatalog[draft.model.provider]?.some((model) => model.id === draft.model.name)) {setError('선택한 Provider의 모델 목록에서 모델을 선택해주세요.'); return;}
             if (!editing && agents.some((agent) => agent.id === draft.id)) {setError('이미 사용 중인 Agent ID입니다.'); return;}
             void run(() => editing ? updateAgent(draft) : createAgent(draft), () => setDraft(null));
-        }}><p>*는 필수 입력 항목입니다. 기본 정보를 입력하세요. 상세 정책은 아래 펼침 영역에서 수정할 수 있습니다. 도구·컨텍스트 출처·메시지 유형·Capabilities는 체크리스트에서 선택할 수 있습니다. 도구는 Web Search와 Debug Echo를 실행할 수 있습니다. 금지·승인 필요로 지정한 도구는 실행하지 않습니다. 준비 중인 도구와 Capabilities는 향후 구현됩니다. 나머지 목록과 객체 항목은 JSON 형식입니다.</p><Fields value={draft} change={change} editing={editing}/><footer><button type='button' onClick={() => {setDraft(null); setError('');}}>취소</button><button disabled={busy} className='primary' type='submit'>{editing ? '저장' : 'Agent 생성'}</button></footer></form> : <div>
+        }}><p>*는 필수 입력 항목입니다. 기본 정보를 입력하세요. 상세 정책은 아래 펼침 영역에서 수정할 수 있습니다. 도구는 각각 가능·불가능·허가 필요 중 하나를 선택하세요. Web Search와 Debug Echo를 실행할 수 있으며, 허가 필요 도구는 요청자 또는 시스템 관리자의 승인 후 실행됩니다. 컨텍스트 출처·메시지 유형·Capabilities는 체크리스트에서 선택할 수 있습니다. 준비 중인 도구와 Capabilities는 향후 구현됩니다. 나머지 목록과 객체 항목은 JSON 형식입니다.</p><Fields value={draft} change={change} editing={editing}/><footer><button type='button' onClick={() => {setDraft(null); setError('');}}>취소</button><button disabled={busy} className='primary' type='submit'>{editing ? '저장' : 'Agent 생성'}</button></footer></form> : <div>
             {!agents.length && <div className='agent-empty'><h3>등록된 Agent가 없습니다</h3><p>역할과 모델, 프롬프트를 설정해 첫 Agent를 만들어보세요.</p></div>}
-            {agents.map((agent) => <article key={agent.id}><h3>{agent.display_name || agent.name}</h3><p>{agent.messenger.username ? `@${agent.messenger.username}` : 'Bot 연결 대기'} · {agent.description}</p><dl><dt>역할</dt><dd>{agent.role.type}</dd><dt>모델</dt><dd>{agent.model.provider} / {agent.model.name}</dd><dt>도구</dt><dd>{agent.tools.allowed?.length || 0}</dd><dt>상태</dt><dd>{agent.runtime?.status || (agent.lifecycle.enabled ? 'PROVISIONING' : 'DISABLED')}{agent.runtime?.error && <p role='alert'>{agent.runtime.error}</p>}</dd></dl>{admin && <div className='agent-actions'>{(!agent.messenger.user_id || ['ERROR', 'PROVISIONING', 'DELETING'].includes(agent.runtime?.status || '')) && <button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? enableAgent : disableAgent)(agent.id, agent.lifecycle.version));}}>Bot 연결 재시도</button>}<button disabled={busy} onClick={() => {setDraft(JSON.parse(JSON.stringify(agent))); setEditing(true); setError('');}}>설정</button><button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? disableAgent : enableAgent)(agent.id, agent.lifecycle.version));}}>{agent.lifecycle.enabled ? '비활성화' : '활성화'}</button><button disabled={busy} className='danger' onClick={() => {setDeleting(agent); setPreserve(false);}}>삭제</button></div>}</article>)}
+            {agents.map((agent) => <article key={agent.id}><h3>{agent.display_name || agent.name}</h3><p>{agent.messenger.username ? `@${agent.messenger.username}` : 'Bot 연결 대기'} · {agent.description}</p><dl><dt>역할</dt><dd>{agent.role.type}</dd><dt>모델</dt><dd>{agent.model.provider} / {agent.model.name}</dd><dt>도구</dt><dd>{agent.tools.allowed?.length || 0}</dd><dt>상태</dt><dd>{agent.runtime?.status || (agent.lifecycle.enabled ? 'PROVISIONING' : 'DISABLED')}{agent.runtime?.error && <p role='alert'>{agent.runtime.error}</p>}</dd></dl>{admin && <div className='agent-actions'>{(!agent.messenger.user_id || ['ERROR', 'PROVISIONING', 'DELETING'].includes(agent.runtime?.status || '')) && <button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? enableAgent : disableAgent)(agent.id, agent.lifecycle.version));}}>Bot 연결 재시도</button>}<button disabled={busy} onClick={() => {const next = JSON.parse(JSON.stringify(agent)); next.tools.allowed = (next.tools.allowed || []).filter((id: string) => !(next.tools.denied || []).includes(id)); next.tools.require_confirmation = (next.tools.require_confirmation || []).filter((id: string) => next.tools.allowed.includes(id)); setDraft(next); setEditing(true); setError('');}}>설정</button><button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? disableAgent : enableAgent)(agent.id, agent.lifecycle.version));}}>{agent.lifecycle.enabled ? '비활성화' : '활성화'}</button><button disabled={busy} className='danger' onClick={() => {setDeleting(agent); setPreserve(false);}}>삭제</button></div>}</article>)}
             {admin && <footer><button disabled={busy} className='primary' onClick={() => {setDraft(freshAgent()); setEditing(false); setError('');}}>＋ Agent 생성</button></footer>}
         </div>}
     </section></div>;

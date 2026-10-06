@@ -50,6 +50,20 @@ class GenerateRequest(BaseModel):
 
 
 class GenerateResponse(BaseModel):
+    status: Literal["completed"] = "completed"
     text: str
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+class ResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_id: str = Field(pattern=r"^[a-z][a-z0-9._-]{2,31}$")
+    root_post_id: str = Field(pattern=r"^[a-z0-9]{26}$")
+    approval_id: str = Field(pattern=r"^apr_[a-f0-9]{32}$")
+    decision: Literal["approve", "reject", "expire"]
+    tools: ToolConfig
+
+    @property
+    def thread_id(self):
+        return f"mattermost:{self.agent_id}:{self.root_post_id}"

@@ -16,7 +16,7 @@ def request(**policy):
 
 
 @pytest.mark.parametrize('policy,expected', [({}, ['debug_echo']), ({'enabled': False}, []),
-    ({'denied': ['debug-echo']}, []), ({'require_confirmation': ['debug-echo']}, []),
+    ({'denied': ['debug-echo']}, []), ({'require_confirmation': ['debug-echo']}, ['debug_echo']),
     ({'allowed': ['unknown']}, [])])
 def test_resolution(policy, expected):
     assert [s.function_name for s in resolve_tools(request(**policy).tools)] == expected
@@ -52,7 +52,7 @@ async def test_provider_independent_loop_and_checkpoint(tmp_path, provider, capl
     async with AsyncSqliteSaver.from_conn_string(path) as saver:
         graph = build_graph(lambda _: model, saver)
         result = await invoke_turn(graph, req)
-        assert result['response'] == {'text': 'final answer', 'input_tokens': 5, 'output_tokens': 3}
+        assert result['response'] == {'status': 'completed', 'text': 'final answer', 'input_tokens': 5, 'output_tokens': 3}
         assert model.bound == [['debug_echo'], ['debug_echo']]
         assert model.calls[-1][-1].content == 'private-echo-value'
         assert model.calls[-1][-2].additional_kwargs['signature'] == 'preserve-provider-metadata'
@@ -70,7 +70,6 @@ async def test_provider_independent_loop_and_checkpoint(tmp_path, provider, capl
 
 @pytest.mark.parametrize('policy,name', [({'enabled': False}, 'debug_echo'),
     ({'denied': ['debug-echo']}, 'debug_echo'),
-    ({'require_confirmation': ['debug-echo']}, 'debug_echo'),
     ({'allowed': []}, 'debug_echo'), ({}, 'shell')])
 async def test_forged_calls_cannot_execute(policy, name):
     executed = []
@@ -226,3 +225,13 @@ async def test_oversized_parallel_batch_stops_without_execution():
             return AIMessage(content='', tool_calls=[{'name': 'debug_echo', 'args': {'text': 'x'}, 'id': str(n)} for n in range(11)])
     result = await invoke_turn(build_graph(lambda _: Batch()), request())
     assert '한도' in result['response']['text']
+
+
+async def test_runtime_capabilities_match_policy_in_system_prompt():
+    model = LoopModel()
+    req = request(allowed=['debug-echo', 'web-search'], denied=['web-search'])
+    await invoke_turn(build_graph(lambda _: model), req)
+    system = model.calls[0][0].content
+    assert 'Runtime tool capabilities: debug_echo.' in system
+    assert 'Runtime tool capabilities: debug_echo, web_search' not in system
+    assert 'Never invent successful tool results' in system

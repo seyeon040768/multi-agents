@@ -15,6 +15,9 @@ type ContextBuilder interface {
 type Messenger interface {
 	Reply(context.Context, *agent.Agent, *mm.Post, string, bool) error
 }
+type ApprovalHandler interface {
+	Request(context.Context, *agent.Agent, *mm.Post, *modelclient.ApprovalInterrupt) error
+}
 type Logger interface{ LogError(string, ...interface{}) }
 type Orchestrator struct {
 	Resolver  AgentResolver
@@ -22,6 +25,7 @@ type Orchestrator struct {
 	Models    modelclient.Client
 	Messenger Messenger
 	Logger    Logger
+	Approvals ApprovalHandler
 }
 
 func (o *Orchestrator) HandleMessage(ctx context.Context, p *mm.Post) error {
@@ -44,7 +48,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, p *mm.Post) error {
 		}
 		response, err = o.Models.Generate(ctx, modelclient.GenerateRequest{Tools: a.Tools, AgentID: a.ID, RootPostID: rootID, PostID: p.Id, Provider: a.Model.Provider, Model: a.Model.Name, Messages: messages, Temperature: a.Model.Parameters.Temperature, MaxTokens: a.Model.Parameters.MaxTokens, TopP: a.Model.Parameters.TopP})
 	}
-	if err == nil && (response == nil || response.Text == "") {
+	if err == nil && (response == nil || (response.Text == "" && response.Status != "interrupted")) {
 		err = fmt.Errorf("empty model response")
 	}
 	if err != nil {
@@ -67,6 +71,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, p *mm.Post) error {
 	}
 	if current == nil || current.ID != a.ID || !current.Lifecycle.Enabled || current.Runtime.Status != "ACTIVE" {
 		return nil
+	}
+	if response.Status == "interrupted" {
+		if o.Approvals == nil {
+			return fmt.Errorf("approval handler unavailable")
+		}
+		return o.Approvals.Request(ctx, current, p, response.Interrupt)
 	}
 	return o.Messenger.Reply(ctx, current, p, response.Text, false)
 }

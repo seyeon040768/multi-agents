@@ -16,6 +16,8 @@ func (p *Plugin) initRouter() *mux.Router {
 
 	apiRouter := router.PathPrefix("/api/v1").Subrouter()
 
+	apiRouter.HandleFunc("/approvals/{id}/{decision:approve|reject}", p.handleApproval).Methods(http.MethodPost)
+
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/agents", p.handleAgents).Methods(http.MethodGet, http.MethodPost)
 	apiRouter.HandleFunc("/agents/{id}", p.handleAgents).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
