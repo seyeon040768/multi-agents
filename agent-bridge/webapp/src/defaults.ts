@@ -1,0 +1,16 @@
+export const freshAgent = () => ({
+    id: '', name: '', display_name: '', description: '', avatar: {emoji: null, url: null}, tags: [],
+    role: {type: 'worker', title: '', specialties: [], capabilities: []},
+    model: {provider: 'openai', name: '', parameters: {temperature: 0.2, max_tokens: 8000, top_p: null}, fallback: {enabled: false, models: []}},
+    prompts: {identity: '', task_instruction: '', reasoning_instruction: '', collaboration_instruction: '', communication_instruction: '', output_instruction: ''},
+    tools: {enabled: true, allowed: [], denied: [], require_confirmation: []},
+    context: {instructions: '', sources: [], max_context_tokens: null},
+    collaboration: {enabled: true, can_delegate: false, can_receive_tasks: true, can_message_agents: true, can_mention_agents: true, can_create_threads: false, can_join_threads: true, can_review_other_agents: false, can_request_review: true, max_delegation_depth: 1},
+    communication: {default_message_type: 'message', allowed_message_types: ['message', 'question', 'answer', 'request', 'feedback', 'review', 'decision', 'summary'], mention_policy: 'allowed', reply_policy: 'thread'},
+    output: {format: 'text', language: 'auto', schema: null, include: {confidence: false, references: false, reasoning_summary: false}},
+    behavior: {autonomy: 'medium', ask_when_uncertain: true, ask_when_missing_context: true, stop_when_blocked: false, retry_on_failure: true, max_retries: 2},
+    permissions: {files: {read: true, write: false}, network: {access: false}, external_actions: {allowed: false}, agents: {message: true, delegate: false}},
+    messenger: {provider: 'mattermost', user_id: null, username: null, bot: true, profile: {display_name: null, avatar_url: null}},
+    lifecycle: {enabled: true, version: 1, created_at: null, updated_at: null}, metadata: {},
+});
+export type Agent = ReturnType<typeof freshAgent>;
