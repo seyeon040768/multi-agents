@@ -1,6 +1,6 @@
 # Agent Bridge LangGraph Runtime
 
-Mattermost Plugin은 Agent KV 조회·메시지 라우팅·Prompt/Thread Context·Bot 게시를 담당한다.
+Mattermost Plugin은 Agent KV 조회·메시지 라우팅·System Prompt·현재 메시지·Bot 게시를 담당한다.
 이 서비스는 LangGraph `START → generate → END`에서 Agent가 선택한 모델을 호출한다.
 OpenAI·Gemini·Claude·Ollama 중 하나로 제한하거나 자동 전환하지 않는다.
 Tool, delegation, 장기 Memory, streaming 및 자동 fallback은 이번 범위에 포함하지 않는다.
@@ -75,7 +75,7 @@ API Key는 Agent 설정 화면이나 Prompt에 입력하지 않는다.
 ```
 
 실제 LangGraph 실행에 mock 모델을 주입해 네 Provider 선택, 인증, Context 구조,
-오류 redaction, timeout/cancel, Tool 호출 거부를 검증한다.
+오류 redaction, timeout/cancel, Tool 호출 거부와 SQLite 재연결·대화 복원·Agent/Thread 분리·중복 요청·저장 실패 처리를 검증한다.
 실제 SDK 어댑터도 네 종류 모두 생성하지만 외부 API를 호출하지 않는다.
 Mattermost Resolver/Prompt/Context/Orchestrator/HTTP/Bot reply 테스트는
 `GOCACHE=/tmp/agentbridge-go-cache go test -race ./server/...`로 `agent-bridge`에서 실행한다.
@@ -86,3 +86,42 @@ Mattermost Resolver/Prompt/Context/Orchestrator/HTTP/Bot reply 테스트는
 [Claude](https://docs.langchain.com/oss/python/integrations/chat/anthropic),
 [Ollama](https://docs.langchain.com/oss/python/integrations/chat/ollama),
 [OpenAI GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4).
+
+## Thread Memory / Checkpoint
+
+Go는 `agent_id`, `root_post_id`, `post_id`, 최신 System Prompt와 현재 user 메시지만 보낸다.
+루트 게시글은 post.id, 답글은 root_id를 사용하며 런타임이
+`mattermost:{agent_id}:{root_post_id}`를 LangGraph thread_id로 만든다.
+`MessagesState`의 add_messages reducer로 user/assistant를 누적한다.
+모델 설정과 System Prompt는 매 요청의 실행 context로 전달하므로 변경된 Agent 설정을 즉시 사용한다.
+기존 Mattermost 쓰레드 기록은 자동 가져오지 않는다. 이 버전부터 처리한 대화가 checkpoint에 쌓인다.
+
+`AsyncSqliteSaver`가 SQLite 파일에 state를 기록한다. Docker는 `checkpoints` named volume을
+`/app/data`에 연결하고 기본 파일은 `/app/data/checkpoints.sqlite`이다.
+컨테이너 재시작·재생성·일반 `docker compose down` 이후에도 volume을 유지한다.
+`docker compose down -v`는 checkpoint volume까지 삭제한다.
+로컬 실행에서는 `CHECKPOINT_DB=./data/checkpoints.sqlite`를 설정한다.
+DB 디렉터리는 런타임 사용자에게 쓰기 권한이 있어야 한다.
+
+같은 thread_id는 조회부터 graph 완료까지 직렬 실행한다. 현재 배포는 **단일 프로세스 / uvicorn worker 1개**를 전제로 한다.
+여러 프로세스·복제본으로 확장할 때는 Postgres checkpointer와 분산 직렬화가 필요하다.
+서로 다른 thread_id는 최대 4개까지 병렬 실행한다. 같은 쓰레드의 순서는 런타임 도착 순서이며
+Mattermost 게시 시각에 따른 정렬이나 Plugin queue의 영속 복구는 아직 제공하지 않는다.
+입력 ID는 Mattermost post.id, 답변 ID는 reply:{post.id}로 고정한다.
+이미 완료한 post.id를 재전송하면 checkpoint의 답변을 반환하여 모델을 다시 호출하지 않는다.
+Mattermost CreatePost 자체의 중복 방지와 실패한 게시의 자동 재시도는 별도 후속 범위다.
+
+모델 입력은 시스템 프롬프트 16 KiB + 최근 최대 20개 메시지/64 KiB로 제한한다.
+전체 state와 checkpoint 이력은 유지하며 실제 tokenizer, retention, 요약은 아직 적용하지 않는다.
+최근 메시지 선택은 graph.model_context에 모아 이후 summarization을 붙일 수 있다.
+Mattermost는 사용자에게 보이는 원본, checkpoint는 Agent 실행 상태다.
+Mattermost post 수정·삭제 또는 Agent 삭제는 checkpoint 자동 삭제로 연결하지 않는다.
+
+checkpoint 초기화·읽기·쓰기 오류는 일반 503으로 처리하고 내부 경로나 대화 내용을 노출하지 않는다.
+저장 실패 후 모델을 자동 재호출하거나 메모리 없는 응답으로 대체하지 않는다.
+초기화 실패 시 서비스는 계속 실행되며 /healthz가 degraded를 반환한다.
+저장 경로를 복구한 뒤 런타임을 재시작한다. 요청 중 저장 실패는 다른 요청의 처리를 중단하지 않는다.
+모델 성공 후 Mattermost 게시 전 장애가 발생하면 실행 상태와 실제 대화 기록이 다를 수 있다.
+
+설계 근거: [LangGraph Persistence](https://docs.langchain.com/oss/python/langgraph/persistence),
+[AsyncSqliteSaver](https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/aio.py).

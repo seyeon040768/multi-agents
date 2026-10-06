@@ -2,26 +2,44 @@ import asyncio
 import hmac
 import logging
 import os
-from contextlib import asynccontextmanager
+import sqlite3
+from pathlib import Path
+from contextlib import AsyncExitStack, asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from .graph import build_graph
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from .graph import build_graph, invoke_turn
+from .memory import ThreadLocks
 from .schema import GenerateRequest, GenerateResponse
 
 logger = logging.getLogger("agent_runtime")
 
 
-def create_app(graph=None, token=None, timeout=80):
+def create_app(graph=None, token=None, timeout=80, checkpoint_path=None, model_factory=None):
     secret = token if token is not None else os.getenv("AGENT_RUNTIME_TOKEN", "")
-    runner = graph if graph is not None else build_graph()
+    runner = graph
+    locks = ThreadLocks()
     slots = asyncio.Semaphore(4)
 
     @asynccontextmanager
     async def lifespan(_app):
         if not secret:
             raise RuntimeError("AGENT_RUNTIME_TOKEN must be configured")
-        yield
+        nonlocal runner
+        async with AsyncExitStack() as stack:
+            if graph is None:
+                try:
+                    path = Path(checkpoint_path or os.getenv("CHECKPOINT_DB", "./data/checkpoints.sqlite"))
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    saver = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(str(path)))
+                    await saver.setup()
+                    runner = build_graph(checkpointer=saver, **({"model_factory": model_factory} if model_factory else {}))
+                except (OSError, sqlite3.Error) as exc:
+                    logger.error("checkpoint initialization failed error_type=%s", type(exc).__name__)
+                    runner = None
+            yield
+            runner = graph
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -37,7 +55,7 @@ def create_app(graph=None, token=None, timeout=80):
 
     @app.get("/healthz")
     async def health():
-        return {"status": "ok"}
+        return {"status": "ok" if runner is not None else "degraded"}
 
     @app.post("/v1/generate", response_model=GenerateResponse, dependencies=[Depends(authenticate)])
     async def generate(request: Request):
@@ -53,8 +71,11 @@ def create_app(graph=None, token=None, timeout=80):
             raise HTTPException(400, "invalid request") from None
 
         async def invoke():
-            async with slots:
-                return await runner.ainvoke({"request": req})
+            if runner is None:
+                raise HTTPException(503, "checkpoint unavailable")
+            async with locks.hold(req.thread_id):
+                async with slots:
+                    return await invoke_turn(runner, req)
 
         async def disconnected():
             while True:
@@ -74,6 +95,9 @@ def create_app(graph=None, token=None, timeout=80):
             return task.result()["response"]
         except HTTPException:
             raise
+        except (sqlite3.Error, OSError) as exc:
+            logger.error("checkpoint failed error_type=%s", type(exc).__name__)
+            raise HTTPException(503, "checkpoint unavailable") from None
         except Exception as exc:
             # Do not log SDK exception text: it can contain credentials or payloads.
             logger.error("generation failed provider=%s error_type=%s", req.provider, type(exc).__name__)

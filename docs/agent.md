@@ -4,13 +4,13 @@
 
 Mattermost Agent Bridge Plugin과 별도 Python LangGraph 실행 서비스로 Agent 관리부터 단일 Agent 텍스트 대화까지 제공한다.
 
-2026-10-06 기준으로 **KV CRUD → Mattermost Bot Provisioning → 단일 Agent 채팅 MVP**를 구현하고 로컬 Mattermost에 배포했다. 기존 Gemini Agent의 실제 DM 답변까지 검증했다.
+2026-10-07 기준으로 **KV CRUD → Mattermost Bot Provisioning → 단일 Agent 채팅 MVP**를 구현하고 로컬 Mattermost에 배포했다. 기존 Gemini Agent의 실제 DM 답변까지 검증했다.
 
 - Agent 설정은 Mattermost Plugin KV Store에 영속 저장한다.
 - Modal을 열 때마다 서버 목록을 조회하고, 생성·수정·활성화·삭제 성공 후 목록을 다시 조회한다.
 - 브라우저 새로고침과 Plugin 재시작 후에도 같은 KV 데이터를 읽는다.
 - 실제 Mattermost Bot 생성·프로필 동기화·활성화·비활성화·삭제와 Bot user ID → Agent ID 역방향 조회를 제공한다.
-- 단일 Agent의 DM·mention을 처리하고 Prompt와 Mattermost Thread Context를 LangGraph에 전달해 Bot으로 같은 Thread에 답변한다.
+- 단일 Agent의 DM·mention을 처리하고 System Prompt와 현재 메시지를 LangGraph에 전달하고 SQLite checkpoint에서 이전 대화를 복원해 Bot으로 같은 Thread에 답변한다.
 - OpenAI·Gemini·Claude·Ollama 어댑터를 제공하며 Agent 설정의 Provider와 모델을 사용한다. 실제 외부 호출은 Gemini로 검증했다.
 - 인증 정보는 실행 서비스 환경 변수로 관리하고, 플러그인은 별도의 Runtime URL/Token으로 실행 서비스에 인증한다.
 - Tool 실행, 장기 Memory, Multi-Agent 위임 및 Task 처리는 후속 범위다.
@@ -235,7 +235,7 @@ lifecycle.updated_at
 | `agent-bridge/server/agent_api.go`, `server/api.go` | Agent REST API·인증·관리자 권한·HTTP 오류 처리 |
 | `agent-bridge/server/messenger/mattermost/` | Bot 생성·프로필·활성 상태·삭제와 Thread 답변 게시 |
 | `agent-bridge/server/orchestrator/` | DM/mention Resolver·Agent 상태 검사·Context/모델/답변 연결 |
-| `agent-bridge/server/prompt/`, `server/context/` | System Prompt 조합·Thread 최근 메시지·역할 변환·mention 제거 |
+| `agent-bridge/server/prompt/`, `server/context/` | System Prompt 조합·현재 user 메시지·mention 제거 |
 | `agent-bridge/server/modelclient/` | Provider 공통 요청/응답 계약과 LangGraph HTTP client |
 | `agent-bridge/server/plugin.go`, `server/configuration.go` | 메시지 Hook·worker·취소 처리·Runtime URL/Token 설정 |
 | `agent-bridge/plugin.json` | 서버와 webapp bundle, Runtime URL/Token 설정 선언 |
@@ -273,12 +273,12 @@ make dist
 
 ## 10. 향후 구현 항목
 
-다음 기능은 현재 구현에 포함하지 않는다. 먼저 Thread Context·Summary Memory·Token 관리를 보완하고 Tool 실행을 추가한다.
+다음 기능은 현재 구현에 포함하지 않는다. 다음은 Tool Calling·권한·승인/interrupt이며, 이후 tokenizer·요약·장기 Memory와 Agent 위임을 확장한다.
 
 1. Thread Context 요약, tokenizer 기반 `max_context_tokens` 관리 및 장기 Memory
 2. Tool Calling·실행·권한/승인 정책과 중앙 Model·Tool Registry의 동적 목록 조회
 3. Multi-Agent 협업·위임 및 Task 실행·취소
-4. 동일 Thread의 동시 질문 순서 보장, 영속 메시지 중복 방지 및 재시작 중 요청 복구
+4. Mattermost 게시 시각에 따른 실행 순서, 답변 게시 중복 방지 및 재시작 중 미완료 요청 복구
 5. 상세 정책 정합성·스키마 검증, 비용·실행 시간 제한, fallback·retry 정책 적용
 6. Channel membership 자동 관리, 생성 시 DM 자동 열기 및 Memory 보존·삭제
 7. YAML Import/Export, 복제, 검색·필터 및 Audit Log
@@ -363,12 +363,15 @@ System·Bot·plugin-generated 메시지는 제외한다. 일반 채널 메시지
 채널의 후속 Thread 질문도 Agent를 mention해야 하며, Agent와의 DM Thread에서는 mention 없이 처리한다.
 
 역방향 KV로 Agent를 찾고 enabled=true, runtime=ACTIVE인 경우에만 실행한다.
-현재 요청보다 이전인 동일 채널 Thread의 최근 19개 게시글과 현재 메시지를 시간순으로 구성한다.
-Agent Bot 게시글은 assistant, 나머지는 user 역할이며 Agent mention은 제거한다.
-시스템 프롬프트에는 identity·role·각 instruction·출력 형식/언어와 이번 단계의 기능 제한을 포함한다.
-현재 메시지는 중복 포함하지 않고, 삭제·system·에러 응답 및 다른 채널 게시글은 Context에서 제외한다.
-Context 텍스트는 최대 64 KiB, 시스템 프롬프트는 최대 16 KiB로 제한한다.
-max_context_tokens에 맞춘 tokenizer·요약, 파일 내용 및 Context Source 로딩은 후속 범위다.
+Go는 System Prompt와 현재 user 메시지만 전송한다. Agent mention은 제거한다.
+root_post_id는 답글의 root_id, 루트 메시지에서는 post.id를 사용한다.
+LangGraph는 `mattermost:{agent_id}:{root_post_id}`를 thread_id로 사용해 Agent/Thread별 state를 분리한다.
+MessagesState + AsyncSqliteSaver로 user/assistant를 누적하고 실행 서비스 재시작 후에도 복원한다.
+System Prompt와 모델 설정은 매 요청에서 갱신하고 checkpoint의 대화와 분리한다.
+현재 버전부터 처리한 메시지만 누적하며 기존 Mattermost Thread 기록은 자동 가져오지 않는다.
+모델 입력은 시스템 프롬프트 16 KiB와 최근 최대 20개 메시지/64 KiB로 제한한다.
+전체 checkpoint 이력은 유지한다. tokenizer·요약·retention 및 파일 Context Source는 후속 범위다.
+Mattermost post 수정·삭제와 checkpoint 삭제는 자동 연동하지 않는다.
 
 플러그인은 4개 worker와 최대 64개 대기 요청을 사용한다. 큐가 가득 차면 Bot으로 재시도 안내를 보낸다.
 요청 timeout은 플러그인 90초, runtime 80초이며 Plugin 비활성화 시 실행 중 요청을 취소한다.
@@ -377,10 +380,13 @@ max_context_tokens에 맞춘 tokenizer·요약, 파일 내용 및 Context Source
 모델 오류는 사용자용 일반 메시지로 알리고 내부 오류 본문·API Key·Prompt는 게시하지 않는다.
 Provider 오류 로그에는 provider와 예외 타입만 남긴다.
 대기 큐는 메모리이므로 Plugin 재시작 중 요청을 복구하지 않는다. Agent/Bot 연결은 KV에서 그대로 읽는다.
-동일 Thread의 동시 질문 순서 보장, 메시지 중복 이벤트에 대한 영속 deduplication은 후속 범위다.
+런타임은 같은 Agent/Thread 요청을 도착 순서대로 직렬 실행한다. 완료된 post.id를 재전송하면 저장된 답변을 재사용한다.
+Mattermost 게시 자체의 중복 방지, 게시 시각 순서 보장 및 미완료 요청 복구는 후속 범위다.
 
 실행 서비스는 저장소의 `agent-runtime/`에서 Python LangGraph StateGraph로 구현한다.
-그래프는 START → generate → END이며 Tool 노드·Tool binding·checkpointer가 없다.
+그래프는 START → generate → END이며 AsyncSqliteSaver checkpointer를 사용한다. Tool 노드·Tool binding은 없다.
+Docker named volume에 DB를 보관한다. checkpoint 오류는 일반 503으로 처리하고 서비스는 계속 실행한다.
+단일 runtime worker로 운영하며 여러 프로세스 확장에는 분산 직렬화와 Postgres checkpointer가 필요하다.
 Agent의 provider/name 그대로 모델을 선택한다. openai, google(Gemini), anthropic(Claude), ollama(로컬)를 지원한다.
 자동 fallback이나 OpenAI로의 Provider 치환은 하지 않는다. 관리 UI의 기존 사전 모델 목록을 유지한다.
 Provider 환경 변수·실행 방법·Plugin 설정은 [실행 서비스 README](../agent-runtime/README.md)를 따른다.
@@ -393,6 +399,7 @@ Agent KV에는 API Key를 저장하지 않는다. `.env`는 Git 및 Docker build
 
 | 용도 | 설정 |
 |---|---|
+| Checkpoint 파일 | `CHECKPOINT_DB` (Docker: `/app/data/checkpoints.sqlite`) |
 | 실행 서비스 요청 인증 | `AGENT_RUNTIME_TOKEN` |
 | OpenAI | `OPENAI_API_KEY` |
 | Gemini | `GOOGLE_API_KEY` 또는 `GEMINI_API_KEY` |
@@ -453,3 +460,20 @@ Agent 생성 시 DM 자동 열기나 자동 채널 참여는 구현하지 않았
 OpenAI·Claude·Ollama의 실제 인증 및 모델 응답, 채널 mention과 여러 차례의 실제 Thread 후속 대화는 추가 운영 확인 대상이다.
 Plugin 재활성화 후 연결 정보 유지까지 확인했으며 재활성화 뒤 새 질문의 실제 답변은 별도 확인 대상이다.
 상세 증거와 테스트 범위는 [채팅 MVP 검증 기록](agent_chat_validation.md)에 남겼다.
+
+
+## 16. Thread Memory / LangGraph Checkpoint
+
+2026-10-07 구현: Agent/Thread별 MessagesState, SQLite 영속 checkpoint, 최신 메시지만 전달하는 HTTP 계약,
+동일 쓰레드 직렬화와 완료 post.id 답변 재사용을 추가했다.
+재연결한 SQLite에서 대화 연속성·다른 쓰레드/Agent 분리·중복 모델 호출 방지·저장 실패 격리를 mock 모델로 검증한다.
+상세 운영 방식과 한계는 [runtime README](../agent-runtime/README.md#thread-memory--checkpoint)를 따른다.
+
+이번 변경 검증 결과:
+
+- Python 테스트 22개 통과: SQLite 닫기/재연결, 같은 Thread 대화 연속성, Agent/Thread 분리,
+  동시·중복 요청, 실패한 turn 재시도, 최신 Prompt 적용, context 제한, 저장 오류 격리.
+- `go test -race ./server/...`, `make dist`, `git diff --check` 통과.
+- Docker named volume에 mock 대화를 저장한 뒤 실제 runtime 컨테이너를 재시작해 이전 user/assistant 복원 확인.
+- Gemini 실호출은 공급자의 `503 UNAVAILABLE` 때문에 이번 시점에는 답변 검증을 완료하지 못했다.
+  Provider·모델·인증 설정은 그대로 유지했다. 이번 checkpoint 변경 이후 Mattermost에서 실제 후속 대화는 추가 확인이 필요하다.

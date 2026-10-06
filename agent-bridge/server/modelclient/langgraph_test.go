@@ -15,6 +15,9 @@ func TestRuntimeHTTPContract(t *testing.T) {
 		require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 		var req GenerateRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		require.Equal(t, "researcher", req.AgentID)
+		require.Equal(t, "root", req.RootPostID)
+		require.Equal(t, "post", req.PostID)
 		require.Equal(t, "anthropic", req.Provider)
 		require.Equal(t, "claude-sonnet-4-6", req.Model)
 		w.Header().Set("Content-Type", "application/json")
@@ -22,7 +25,7 @@ func TestRuntimeHTTPContract(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &LangGraph{URL: server.URL, Token: "test-token"}
-	resp, err := client.Generate(context.Background(), GenerateRequest{Provider: "anthropic", Model: "claude-sonnet-4-6"})
+	resp, err := client.Generate(context.Background(), GenerateRequest{AgentID: "researcher", RootPostID: "root", PostID: "post", Provider: "anthropic", Model: "claude-sonnet-4-6"})
 	require.NoError(t, err)
 	require.Equal(t, "answer", resp.Text)
 	ctx, cancel := context.WithCancel(context.Background())

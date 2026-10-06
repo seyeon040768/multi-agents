@@ -7,6 +7,9 @@ type Message struct {
 	Content string `json:"content"`
 }
 type GenerateRequest struct {
+	AgentID     string    `json:"agent_id"`
+	RootPostID  string    `json:"root_post_id"`
+	PostID      string    `json:"post_id"`
 	Provider    string    `json:"provider"`
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`

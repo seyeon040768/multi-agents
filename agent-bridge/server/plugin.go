@@ -122,7 +122,7 @@ func (p *Plugin) startChat() {
 				case post := <-p.chatQueue:
 					cfg := p.getConfiguration()
 					store := agent.NewKVAgentStore(p.API)
-					o := &orchestrator.Orchestrator{Resolver: &orchestrator.Resolver{API: p.API, Agents: store}, Context: &agentcontext.Builder{API: p.API, Prompt: prompt.Builder{}}, Models: &modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}, Messenger: &mattermost.Messenger{API: p.API}, Logger: p.API}
+					o := &orchestrator.Orchestrator{Resolver: &orchestrator.Resolver{API: p.API, Agents: store}, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: &modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}, Messenger: &mattermost.Messenger{API: p.API}, Logger: p.API}
 					ctx, cancel := context.WithTimeout(p.chatCtx, 90*time.Second)
 					if err := o.HandleMessage(ctx, post); err != nil {
 						p.API.LogError("Agent message processing failed", "post_id", post.Id)

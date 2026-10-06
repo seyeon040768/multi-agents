@@ -3,13 +3,13 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from agent_runtime.app import create_app
-from agent_runtime.graph import build_graph
+from agent_runtime.graph import build_graph, invoke_turn
 from agent_runtime.providers import create_model
 from agent_runtime.schema import GenerateRequest
 
 
 def payload(provider="google", model="gemini-3-flash-preview"):
-    return {"provider": provider, "model": model, "temperature": 0.2, "max_tokens": 8000,
+    return {"agent_id": "researcher", "root_post_id": "r" * 26, "post_id": "p" * 26, "provider": provider, "model": model, "temperature": 0.2, "max_tokens": 8000,
             "top_p": None, "messages": [{"role": "system", "content": "identity"},
                                        {"role": "user", "content": "question"}]}
 
@@ -28,9 +28,9 @@ async def test_graph_routes_without_llm(provider, model):
         assert req.provider == provider
         assert req.model == model
         return FakeModel()
-    result = await build_graph(factory).ainvoke({"request": GenerateRequest(**payload(provider, model))})
-    assert result["response"].text == "안녕하세요"
-    assert result["response"].input_tokens == 3
+    result = await invoke_turn(build_graph(factory), GenerateRequest(**payload(provider, model)))
+    assert result["response"]["text"] == "안녕하세요"
+    assert result["response"]["input_tokens"] == 3
 
 
 def test_auth_schema_and_error_redaction():
@@ -85,7 +85,7 @@ async def test_unexpected_tool_call_has_no_execution():
         async def ainvoke(self, _):
             return AIMessage(content="", tool_calls=[{"name": "shell", "args": {}, "id": "call"}])
     with pytest.raises(ValueError, match="tool calls"):
-        await build_graph(lambda _: Tool()).ainvoke({"request": GenerateRequest(**payload())})
+        await invoke_turn(build_graph(lambda _: Tool()), GenerateRequest(**payload()))
 
 
 @pytest.mark.parametrize("provider,model,key", [("openai", "gpt-5.4", "OPENAI_API_KEY"),
