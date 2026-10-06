@@ -1,3 +1,8 @@
+Agent CRUD·Mattermost Bot Provisioning·단일 Agent 채팅 파이프라인을 구현한다.
+채팅에는 별도 [LangGraph 실행 서비스](../agent-runtime/README.md)와 Plugin의 Runtime URL/Token 설정이 필요하다.
+OpenAI·Gemini·Claude·Ollama를 Agent 설정에 따라 선택한다.
+현재 기능 및 제한은 [구현 명세](../docs/agent.md)를 참고한다.
+
 # Plugin Starter Template
 
 [![Build Status](https://github.com/mattermost/mattermost-plugin-starter-template/actions/workflows/ci.yml/badge.svg)](https://github.com/mattermost/mattermost-plugin-starter-template/actions/workflows/ci.yml)

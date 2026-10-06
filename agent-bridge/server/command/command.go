@@ -33,7 +33,7 @@ func NewCommandHandler(client *pluginapi.Client) Command {
 }
 
 func (c *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error) {
-	return ephemeral("UI를 불러온 후 `/agent create` 또는 `/agent list`를 실행해주세요. 이 버전은 UI 미리보기이며 Bot이나 설정을 저장하지 않습니다."), nil
+	return ephemeral("UI를 불러온 후 `/agent create` 또는 `/agent list`를 실행해주세요. Agent 설정은 Mattermost Plugin KV Store에 저장됩니다."), nil
 }
 
 func ephemeral(text string) *model.CommandResponse {

@@ -2,12 +2,13 @@ import React, {useEffect, useRef, useState} from 'react';
 import {Agent, freshAgent} from './defaults';
 import {modelCatalog} from './models';
 import './style.css';
+import {listAgents, createAgent, updateAgent, deleteAgent, enableAgent, disableAgent} from './api/agents';
 
 const pluginId = 'com.seyeon.agentbridge';
 type Store = {getState: () => any; subscribe: (callback: () => void) => () => void};
 type Registry = {registerRootComponent: (component: React.ComponentType) => void; registerSlashCommandWillBePostedHook: (hook: (message: string, args: any) => any) => void};
 const choices: Record<string, string[]> = {'role.type': ['leader', 'worker', 'reviewer', 'specialist', 'coordinator', 'custom'], 'model.provider': Object.keys(modelCatalog), 'output.format': ['text', 'markdown', 'json', 'structured'], 'behavior.autonomy': ['low', 'medium', 'high']};
-const readonly = new Set(['messenger.provider', 'messenger.user_id', 'messenger.username', 'messenger.bot', 'lifecycle.version', 'lifecycle.created_at', 'lifecycle.updated_at', 'lifecycle.enabled']);
+const readonly = new Set(['messenger.provider', 'messenger.user_id', 'messenger.username', 'messenger.bot', 'lifecycle.version', 'lifecycle.created_at', 'lifecycle.updated_at', 'lifecycle.enabled', 'runtime.status', 'runtime.error']);
 const previewTools = [
     {id: 'web-search', name: 'Web Search', description: '웹에서 정보를 검색합니다'},
     {id: 'file-reader', name: 'File Reader', description: '파일 내용을 읽습니다'},
@@ -120,6 +121,9 @@ function App({store}: {store: Store}) {
     const [deleting, setDeleting] = useState<Agent | null>(null);
     const [preserve, setPreserve] = useState(false);
     const [error, setError] = useState('');
+    const [busy, setBusy] = useState(false);
+    const refresh = async () => {const latest = await listAgents(); setAgents(latest); setDeleting((current) => current ? latest.find((item) => item.id === current.id) || null : null);};
+    const run = async (operation: () => Promise<unknown>, done?: () => void) => {setBusy(true); setError(''); try {await operation(); done?.(); await refresh();} catch (err) {setError(err instanceof Error ? err.message : '요청에 실패했습니다.'); try {await refresh();} catch {/* Keep the original operation error. */}} finally {setBusy(false);}};
     const [, redraw] = useState(0);
     const closeButton = useRef<HTMLButtonElement>(null);
     const state = store.getState();
@@ -127,7 +131,7 @@ function App({store}: {store: Store}) {
     const admin = (user?.roles || '').split(' ').includes('system_admin');
     useEffect(() => store.subscribe(() => redraw((n) => n + 1)), [store]);
     useEffect(() => {
-        const listener = (event: Event) => {setOpen(true); setError(''); setDeleting(null); setDraft((event as CustomEvent).detail === 'create' ? freshAgent() : null); setEditing(false);};
+        const listener = (event: Event) => {setOpen(true); setError(''); setDeleting(null); setDraft((event as CustomEvent).detail === 'create' ? freshAgent() : null); setEditing(false); void run(async () => {});};
         window.addEventListener('agent-ui-open', listener);
         return () => window.removeEventListener('agent-ui-open', listener);
     }, []);
@@ -138,23 +142,24 @@ function App({store}: {store: Store}) {
     return <div className='agent-ui-backdrop' onKeyDown={(e) => {
         if (e.key === 'Escape') {close();}
         if (e.key === 'Tab') {const elements = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button, input, select, textarea')).filter((el) => !el.hasAttribute('disabled') && el.getClientRects().length); const first = elements[0]; const last = elements[elements.length - 1]; if (e.shiftKey && document.activeElement === first) {e.preventDefault(); last?.focus();} else if (!e.shiftKey && document.activeElement === last) {e.preventDefault(); first?.focus();}}
-    }}><section className='agent-ui' role='dialog' aria-modal='true' aria-labelledby='agent-title'>
+    }}><section aria-busy={busy} className='agent-ui' role='dialog' aria-modal='true' aria-labelledby='agent-title'>
         <header><h2 id='agent-title'>{deleting ? 'Agent 삭제' : draft ? editing ? 'Agent 설정' : 'Agent 생성' : `AI Agents · ${agents.length}`}</h2><button ref={closeButton} onClick={close} aria-label='닫기'>×</button></header>
-        <p className='agent-notice'>UI 미리보기 · 변경은 현재 브라우저 메모리에만 유지됩니다. 새로고침하면 초기화되며 실제 Bot은 생성되지 않습니다.</p>
+        <p className='agent-notice'>Agent 설정은 Mattermost Plugin KV Store에 저장됩니다.</p>
         {!admin && <p>일반 사용자는 Agent 목록만 조회할 수 있습니다.</p>}
+        {busy && <p role='status'>불러오는 중…</p>}
+        {!busy && <button onClick={() => {setDraft(null); setDeleting(null); void run(async () => {});}}>최신 목록 불러오기</button>}
         {error && <p role='alert' className='agent-error'>{error}</p>}
-        {deleting && admin ? <div><p><strong>{deleting.display_name || deleting.name}</strong>을 임시 목록에서 삭제하시겠습니까?</p><p>Agent ID: {deleting.id}</p><label><input type='checkbox' checked={preserve} onChange={(e) => setPreserve(e.target.checked)}/>Long-term Memory 보존 (실제 저장소 연결 전)</label><footer><button onClick={() => setDeleting(null)}>취소</button><button className='danger' onClick={() => {if (!admin) {return;} setAgents(agents.filter((agent) => agent.id !== deleting.id)); setDeleting(null);}}>삭제</button></footer></div> : draft && admin ? <form onSubmit={(e) => {
-            e.preventDefault(); if (!admin) {return;}
+        {deleting && admin ? <div><p><strong>{deleting.display_name || deleting.name}</strong>을 삭제하시겠습니까?</p><p>Agent ID: {deleting.id}</p><p>연결된 Mattermost Bot 계정도 영구 삭제됩니다.</p><label><input type='checkbox' checked={preserve} onChange={(e) => setPreserve(e.target.checked)}/>Long-term Memory 보존</label><p>Memory 기능은 아직 구현되지 않았으며 현재 이 옵션은 실제 데이터 처리에 영향을 주지 않습니다.</p><footer><button onClick={() => setDeleting(null)}>취소</button><button disabled={busy} className='danger' onClick={() => {if (!admin) {return;} void run(() => deleteAgent(deleting.id, deleting.lifecycle.version), () => setDeleting(null));}}>삭제</button></footer></div> : draft && admin ? <form onSubmit={(e) => {
+            e.preventDefault(); if (busy || !admin) {return;}
             if (!/^[a-z][a-z0-9._-]{2,31}$/.test(draft.id)) {setError('Agent ID는 영문 소문자로 시작하는 3–32자의 영문 소문자, 숫자, 점, 밑줄, 하이픈으로 입력해주세요.'); return;}
             if (!draft.name.trim() || !draft.model.name.trim() || !draft.prompts.identity.trim()) {setError('이름, 모델 이름, Identity Prompt를 입력해주세요.'); return;}
             if (!modelCatalog[draft.model.provider]?.some((model) => model.id === draft.model.name)) {setError('선택한 Provider의 모델 목록에서 모델을 선택해주세요.'); return;}
             if (!editing && agents.some((agent) => agent.id === draft.id)) {setError('이미 사용 중인 Agent ID입니다.'); return;}
-            const saved = {...draft, lifecycle: {...draft.lifecycle, version: editing ? draft.lifecycle.version + 1 : 1, created_at: draft.lifecycle.created_at || new Date().toISOString() as any, updated_at: new Date().toISOString() as any}};
-            setAgents(editing ? agents.map((agent) => agent.id === saved.id ? saved : agent) : [...agents, saved]); setDraft(null); setError('');
-        }}><p>*는 필수 입력 항목입니다. 기본 정보를 입력하세요. 상세 정책은 아래 펼침 영역에서 수정할 수 있습니다. 도구·컨텍스트 출처·메시지 유형·Capabilities는 체크리스트에서 선택할 수 있습니다. Capabilities와 도구는 임시 목록입니다. 나머지 목록과 객체 항목은 JSON 형식입니다.</p><Fields value={draft} change={change} editing={editing}/><footer><button type='button' onClick={() => {setDraft(null); setError('');}}>취소</button><button className='primary' type='submit'>{editing ? '저장' : 'Agent 생성'}</button></footer></form> : <div>
+            void run(() => editing ? updateAgent(draft) : createAgent(draft), () => setDraft(null));
+        }}><p>*는 필수 입력 항목입니다. 기본 정보를 입력하세요. 상세 정책은 아래 펼침 영역에서 수정할 수 있습니다. 도구·컨텍스트 출처·메시지 유형·Capabilities는 체크리스트에서 선택할 수 있습니다. Capabilities와 도구는 임시 목록입니다. 나머지 목록과 객체 항목은 JSON 형식입니다.</p><Fields value={draft} change={change} editing={editing}/><footer><button type='button' onClick={() => {setDraft(null); setError('');}}>취소</button><button disabled={busy} className='primary' type='submit'>{editing ? '저장' : 'Agent 생성'}</button></footer></form> : <div>
             {!agents.length && <div className='agent-empty'><h3>등록된 Agent가 없습니다</h3><p>역할과 모델, 프롬프트를 설정해 첫 Agent를 만들어보세요.</p></div>}
-            {agents.map((agent) => <article key={agent.id}><h3>{agent.display_name || agent.name}</h3><p>@{agent.id} · {agent.description}</p><dl><dt>역할</dt><dd>{agent.role.type}</dd><dt>모델</dt><dd>{agent.model.provider} / {agent.model.name}</dd><dt>도구</dt><dd>{agent.tools.allowed.length}</dd><dt>상태</dt><dd>{agent.lifecycle.enabled ? '🟢 Active' : '⚪ Disabled'}</dd></dl>{admin && <div className='agent-actions'><button onClick={() => {setDraft(JSON.parse(JSON.stringify(agent))); setEditing(true); setError('');}}>설정</button><button onClick={() => setAgents(agents.map((item) => item.id === agent.id ? {...item, lifecycle: {...item.lifecycle, enabled: !item.lifecycle.enabled, version: item.lifecycle.version + 1, updated_at: new Date().toISOString() as any}} : item))}>{agent.lifecycle.enabled ? '비활성화' : '활성화'}</button><button className='danger' onClick={() => {setDeleting(agent); setPreserve(false);}}>삭제</button></div>}</article>)}
-            {admin && <footer><button className='primary' onClick={() => {setDraft(freshAgent()); setEditing(false); setError('');}}>＋ Agent 생성</button></footer>}
+            {agents.map((agent) => <article key={agent.id}><h3>{agent.display_name || agent.name}</h3><p>{agent.messenger.username ? `@${agent.messenger.username}` : 'Bot 연결 대기'} · {agent.description}</p><dl><dt>역할</dt><dd>{agent.role.type}</dd><dt>모델</dt><dd>{agent.model.provider} / {agent.model.name}</dd><dt>도구</dt><dd>{agent.tools.allowed?.length || 0}</dd><dt>상태</dt><dd>{agent.runtime?.status || (agent.lifecycle.enabled ? 'PROVISIONING' : 'DISABLED')}{agent.runtime?.error && <p role='alert'>{agent.runtime.error}</p>}</dd></dl>{admin && <div className='agent-actions'>{(!agent.messenger.user_id || ['ERROR', 'PROVISIONING', 'DELETING'].includes(agent.runtime?.status || '')) && <button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? enableAgent : disableAgent)(agent.id, agent.lifecycle.version));}}>Bot 연결 재시도</button>}<button disabled={busy} onClick={() => {setDraft(JSON.parse(JSON.stringify(agent))); setEditing(true); setError('');}}>설정</button><button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? disableAgent : enableAgent)(agent.id, agent.lifecycle.version));}}>{agent.lifecycle.enabled ? '비활성화' : '활성화'}</button><button disabled={busy} className='danger' onClick={() => {setDeleting(agent); setPreserve(false);}}>삭제</button></div>}</article>)}
+            {admin && <footer><button disabled={busy} className='primary' onClick={() => {setDraft(freshAgent()); setEditing(false); setError('');}}>＋ Agent 생성</button></footer>}
         </div>}
     </section></div>;
 }

@@ -20,15 +20,15 @@
 - Boolean 필드는 YAML Boolean으로 저장한다. 체크박스가 비활성화되어도 저장된 값을 지우지 않는다.
 - `enabled`가 있는 그룹의 UI는 해당 값이 false이면 나머지 하위 입력 요소를 비활성화하고, 다시 true로 변경하면 보존된 값을 편집할 수 있게 한다.
 - Messenger 연결 정보와 Lifecycle 정보는 시스템이 관리한다. `messenger.profile`은 사용자 설정이며 연결 ID와 구분한다.
-- 별도 Memory Policy, Response Policy, Task Limits, Bot ID, 상태 Enum은 이 스키마에 아직 정의하지 않았다. 향후 필요한 경우 이 문서부터 확장한다.
+- 별도 Memory Policy, Response Policy, Task Limits는 아직 정의하지 않았다. Bot ID는 messenger.user_id에 저장한다. runtime.status는 PROVISIONING, ACTIVE, DISABLED, ERROR, DELETING이며 runtime.error는 오류 문자열 또는 null이다. 두 필드는 서버가 관리한다.
 
 ## 현재 UI의 입력 계약
 
 필수 항목은 `agent.id`, `agent.name`, `agent.model.name`, `agent.prompts.identity`다. UI에서 `*`를 표시한다. 이름과 Identity Prompt는 공백만 입력할 수 없다.
 
-Agent ID는 `^[a-z][a-z0-9._-]{2,31}$`를 따르며 현재 임시 목록에서 중복을 허용하지 않는다. 생성 이후에는 읽기 전용이다.
+Agent ID는 `^[a-z][a-z0-9._-]{2,31}$`를 따르며 Mattermost KV에서 CAS로 중복 생성을 방지한다. 생성 이후에는 읽기 전용이다.
 
-모델 Provider와 이름은 사전 목록에서 선택한다. Provider 변경 시 모델 이름을 비우고 다시 선택하게 한다. 목록에 없는 모델은 저장 전에 다시 선택해야 한다. 목록은 `agent-bridge/webapp/src/models.ts`에서 관리한다. 예를 들어 Gemini 3 Flash (Preview)는 아래처럼 표현한다.
+모델 Provider와 이름은 사전 목록에서 선택한다. Provider 변경 시 모델 이름을 비우고 다시 선택하게 한다. 목록에 없는 모델은 저장 전에 다시 선택해야 한다. 목록은 `agent-bridge/webapp/src/models.ts`와 `agent-bridge/server/agent/validation.go`에서 같은 계약으로 관리한다. 예를 들어 Gemini 3 Flash (Preview)는 아래처럼 표현한다.
 
 ```yaml
 model:
@@ -54,13 +54,15 @@ messenger.provider
 messenger.user_id
 messenger.username
 messenger.bot
+runtime.status
+runtime.error
 lifecycle.enabled
 lifecycle.version
 lifecycle.created_at
 lifecycle.updated_at
 ```
 
-`lifecycle.enabled`는 목록의 활성화·비활성화 버튼으로 변경한다. 현재 UI는 생성 시 version을 1로 설정하고, 설정 저장이나 활성화 변경 시 증가시킨다. 생성·수정 시간은 ISO 8601 문자열이며 저장 전에는 null이다. 현재 구현은 브라우저 메모리에서만 처리하며 서버 동시 수정 검증이나 실행 제어를 의미하지 않는다.
+`lifecycle.enabled`는 목록의 활성화·비활성화 API로 변경한다. 서버가 최초 KV 생성 시 enabled=true, version=1과 UTC 생성·수정 시간을 설정한다. Bot 작업의 중간 상태와 연결 저장마다 version을 추가로 증가시키므로 최종 생성 응답 version은 1보다 클 수 있다. 설정 저장이나 활성화 변경 시 version을 증가시키고 수정 시간을 갱신하며 created_at은 보존한다. 생성·수정 시간은 ISO 8601 문자열이며 저장 전에는 null이다. 수정·삭제·활성화 변경에는 사용자가 조회한 version이 필요하고, version 검증과 KV CAS로 동시 변경을 차단한다. 설정 저장으로 lifecycle.enabled 또는 Messenger 연결 정보를 변경할 수 없다. Agent JSON에는 모델 자격 증명 필드를 정의하지 않으며 알 수 없는 필드는 API에서 거부한다.
 
 ## YAML 구조 예시
 
@@ -333,6 +335,10 @@ agent:
   # ---------------------------------------------------------------------------
   # Lifecycle
   # ---------------------------------------------------------------------------
+  runtime:
+    status: PROVISIONING
+    error: null
+
   lifecycle:
     enabled: true
 

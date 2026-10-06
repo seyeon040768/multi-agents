@@ -17,6 +17,9 @@ func (p *Plugin) initRouter() *mux.Router {
 	apiRouter := router.PathPrefix("/api/v1").Subrouter()
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
+	apiRouter.HandleFunc("/agents", p.handleAgents).Methods(http.MethodGet, http.MethodPost)
+	apiRouter.HandleFunc("/agents/{id}", p.handleAgents).Methods(http.MethodGet, http.MethodPut, http.MethodDelete)
+	apiRouter.HandleFunc("/agents/{id}/{action:enable|disable}", p.handleAgents).Methods(http.MethodPost)
 
 	return router
 }
@@ -31,7 +34,7 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get("Mattermost-User-ID")
 		if userID == "" {
-			http.Error(w, "Not authorized", http.StatusUnauthorized)
+			apiError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 			return
 		}
 

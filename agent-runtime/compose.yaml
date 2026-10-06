@@ -1,0 +1,15 @@
+services:
+  agent-runtime:
+    build: .
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - mattermost
+networks:
+  mattermost:
+    external: true
+    name: ${MATTERMOST_DOCKER_NETWORK:-docker_default}

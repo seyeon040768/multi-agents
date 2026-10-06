@@ -15,7 +15,23 @@
   "settings_schema": {
     "header": "",
     "footer": "",
-    "settings": []
+    "settings": [
+      {
+        "key": "LangGraphURL",
+        "display_name": "LangGraph Runtime URL",
+        "type": "text",
+        "default": "",
+        "help_text": "Runtime service base URL reachable from the Mattermost server, e.g. http://agent-runtime:8000."
+      },
+      {
+        "key": "LangGraphToken",
+        "display_name": "LangGraph Runtime Token",
+        "type": "text",
+        "secret": true,
+        "default": "",
+        "help_text": "Must match AGENT_RUNTIME_TOKEN on the runtime. Provider API keys belong in runtime environment variables."
+      }
+    ]
   },
   "webapp": {
     "bundle_path": "webapp/dist/main.js"
