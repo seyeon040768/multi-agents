@@ -126,6 +126,7 @@ UI의 사전 모델 목록은 `agent-bridge/webapp/src/models.ts`에서 관리�
 | `openai` | GPT-5.4 | `gpt-5.4` |
 | `anthropic` | Claude Sonnet 4.6 | `claude-sonnet-4-6` |
 | `google` | Gemini 3 Flash (Preview) | `gemini-3-flash-preview` |
+| `google` | Gemini 3.1 Flash-Lite | `gemini-3.1-flash-lite` |
 | `ollama` | Qwen3 8B (Local) | `qwen3:8b` |
 
 Provider를 선택하면 해당 Provider의 모델만 표시한다. Provider를 바꾸면 `model.name`을 비우고 다시 선택하도록 한다. 화면에는 표시 이름과 API 모델 ID를 함께 보여주고 설정에는 실제 ID를 저장한다.

@@ -8,7 +8,12 @@ import (
 var idPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,31}$`)
 
 // Keep this catalog aligned with webapp/src/models.ts; it does not invoke providers.
-var modelCatalog = map[string]string{"openai": "gpt-5.4", "anthropic": "claude-sonnet-4-6", "google": "gemini-3-flash-preview", "ollama": "qwen3:8b"}
+var modelCatalog = map[string]map[string]bool{
+	"openai":    {"gpt-5.4": true},
+	"anthropic": {"claude-sonnet-4-6": true},
+	"google":    {"gemini-3-flash-preview": true, "gemini-3.1-flash-lite": true},
+	"ollama":    {"qwen3:8b": true},
+}
 
 func ValidateID(id string) error {
 	if !idPattern.MatchString(id) {
@@ -27,7 +32,7 @@ func Validate(a *Agent) error {
 	if strings.TrimSpace(a.Prompts.Identity) == "" {
 		return &ValidationError{"INVALID_PROMPT", "identity prompt is required"}
 	}
-	if modelCatalog[a.Model.Provider] == "" || modelCatalog[a.Model.Provider] != a.Model.Name {
+	if !modelCatalog[a.Model.Provider][a.Model.Name] {
 		return &ValidationError{"INVALID_MODEL", "select a registered provider and model"}
 	}
 	return nil

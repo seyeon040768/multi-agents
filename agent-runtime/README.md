@@ -14,7 +14,7 @@ Tool, delegation, 장기 Memory, streaming 및 자동 fallback은 이번 범위�
 
 Agent에는 provider/name/parameters만 저장한다. API Key와 모델 서버 주소는 요청이나 Agent KV로 받지 않는다.
 로컬 모델은 이번 단계에서 Ollama를 통해 연결한다. 설치된 모델 이름과 Agent의 model.name이 일치해야 한다.
-관리 UI의 모델 카탈로그는 현재 각 Provider당 기존 모델 하나를 제공한다.
+관리 UI의 Google 모델 목록에는 Gemini 3 Flash (Preview)와 Gemini 3.1 Flash-Lite를 제공한다.
 Claude에 top_p가 지정되면 temperature 대신 top_p를 전달한다.
 기존 OpenAI gpt-5.4에는 sampling 호환성을 위해 Responses API + reasoning effort none을 사용한다.
 Gemini는 Vertex AI가 아닌 Gemini Developer API를 사용한다.
