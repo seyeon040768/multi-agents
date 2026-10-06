@@ -13,7 +13,7 @@ Mattermost Agent Bridge Plugin과 별도 Python LangGraph 실행 서비스로 Ag
 - 단일 Agent의 DM·mention을 처리하고 System Prompt와 현재 메시지를 LangGraph에 전달하고 SQLite checkpoint에서 이전 대화를 복원해 Bot으로 같은 Thread에 답변한다.
 - OpenAI·Gemini·Claude·Ollama 어댑터를 제공하며 Agent 설정의 Provider와 모델을 사용한다. 실제 외부 호출은 Gemini로 검증했다.
 - 인증 정보는 실행 서비스 환경 변수로 관리하고, 플러그인은 별도의 Runtime URL/Token으로 실행 서비스에 인증한다.
-- Tool 실행, 장기 Memory, Multi-Agent 위임 및 Task 처리는 후속 범위다.
+- 정책 기반 Tool 실행을 지원한다. 승인/interrupt, 장기 Memory, Multi-Agent 위임 및 Task 처리는 후속 범위다.
 
 ## 2. 설정 구조의 기준
 
@@ -145,9 +145,9 @@ model:
 
 선택값은 각 필드의 문자열 배열로 유지한다. 사전 목록에 없는 기존 선택값도 추가 항목으로 표시해 보존한다.
 
-### Tools (임시 목록)
+### Tools (실행 및 향후 목록)
 
-`tools.allowed`, `tools.denied`, `tools.require_confirmation`에 같은 목록을 제공한다. 세 목록은 독립적으로 선택하며 중복 선택의 정책 검증은 아직 하지 않는다.
+`tools.allowed`, `tools.denied`, `tools.require_confirmation`에 같은 목록을 제공한다. 세 목록은 독립적으로 선택하며 중복 선택 시 denied가 우선하며 require_confirmation은 현재 자동 실행에서 제외한다.
 
 | 이름 | ID |
 |---|---|
@@ -274,10 +274,10 @@ make dist
 
 ## 10. 향후 구현 항목
 
-다음 기능은 현재 구현에 포함하지 않는다. 다음은 Tool Calling·권한·승인/interrupt이며, 이후 tokenizer·요약·장기 Memory와 Agent 위임을 확장한다.
+다음 기능은 현재 구현에 포함하지 않는다. 다음은 Tool 승인/interrupt이며, 이후 tokenizer·요약·장기 Memory와 Agent 위임을 확장한다.
 
 1. Thread Context 요약, tokenizer 기반 `max_context_tokens` 관리 및 장기 Memory
-2. Tool Calling·실행·권한/승인 정책과 중앙 Model·Tool Registry의 동적 목록 조회
+2. Tool 승인/interrupt와 중앙 Model·Tool Registry의 동적 목록 조회
 3. Multi-Agent 협업·위임 및 Task 실행·취소
 4. Mattermost 게시 시각에 따른 실행 순서, 답변 게시 중복 방지 및 재시작 중 미완료 요청 복구
 5. 상세 정책 정합성·스키마 검증, 비용·실행 시간 제한, fallback·retry 정책 적용
@@ -370,7 +370,7 @@ LangGraph는 `mattermost:{agent_id}:{root_post_id}`를 thread_id로 사용해 Ag
 MessagesState + AsyncSqliteSaver로 user/assistant를 누적하고 실행 서비스 재시작 후에도 복원한다.
 System Prompt와 모델 설정은 매 요청에서 갱신하고 checkpoint의 대화와 분리한다.
 현재 버전부터 처리한 메시지만 누적하며 기존 Mattermost Thread 기록은 자동 가져오지 않는다.
-모델 입력은 시스템 프롬프트 16 KiB와 최근 최대 20개 메시지/64 KiB로 제한한다.
+모델 입력은 시스템 프롬프트 16 KiB와 완결된 대화 단위의 최근 20개 메시지/64 KiB (현재 Tool turn은 메시지 수 제한에서 제외)로 제한한다.
 전체 checkpoint 이력은 유지한다. tokenizer·요약·retention 및 파일 Context Source는 후속 범위다.
 Mattermost post 수정·삭제와 checkpoint 삭제는 자동 연동하지 않는다.
 
@@ -385,7 +385,7 @@ Provider 오류 로그에는 provider와 예외 타입만 남긴다.
 Mattermost 게시 자체의 중복 방지, 게시 시각 순서 보장 및 미완료 요청 복구는 후속 범위다.
 
 실행 서비스는 저장소의 `agent-runtime/`에서 Python LangGraph StateGraph로 구현한다.
-그래프는 START → generate → END이며 AsyncSqliteSaver checkpointer를 사용한다. Tool 노드·Tool binding은 없다.
+그래프는 START → generate → policy_check → tools → generate → END이며 AsyncSqliteSaver checkpointer를 사용한다. Tool이 없는 응답은 generate에서 END로 종료한다.
 Docker named volume에 DB를 보관한다. checkpoint 오류는 일반 503으로 처리하고 서비스는 계속 실행한다.
 단일 runtime worker로 운영하며 여러 프로세스 확장에는 분산 직렬화와 Postgres checkpointer가 필요하다.
 Agent의 provider/name 그대로 모델을 선택한다. openai, google(Gemini), anthropic(Claude), ollama(로컬)를 지원한다.
@@ -478,3 +478,24 @@ Plugin 재활성화 후 연결 정보 유지까지 확인했으며 재활성화 
 - Docker named volume에 mock 대화를 저장한 뒤 실제 runtime 컨테이너를 재시작해 이전 user/assistant 복원 확인.
 - Gemini 실호출은 공급자의 `503 UNAVAILABLE` 때문에 이번 시점에는 답변 검증을 완료하지 못했다.
   Provider·모델·인증 설정은 그대로 유지했다. 이번 checkpoint 변경 이후 Mattermost에서 실제 후속 대화는 추가 확인이 필요하다.
+
+
+## Tool Calling 마일스톤 (2026-10-07)
+
+- Go Orchestrator가 저장된 Agent의 tools.enabled/allowed/denied/require_confirmation을 런타임에 전달한다.
+- Python ToolSpec Registry는 설정 ID와 모델 function name을 매핑한다: debug-echo → debug_echo,
+  web-search → web_search. 등록되지 않은 file/pdf/code/vector Tool은 실행되지 않는다.
+- Provider 공통 bind_tools → policy_check → tools → generate loop를 사용한다.
+- denied 및 require_confirmation이 allowed보다 우선한다. 위조/미등록 호출도 실행 직전에 차단한다.
+- 호출 시도 10회 제한, Tool timeout, 안전한 오류 ToolMessage, 실행 로그를 구현한다.
+- ToolMessage와 provider metadata를 checkpoint에 보존한다. 완료 요청의 중복 실행은 기존 캐시 경로로 막는다.
+- 웹 검색은 Brave Search API이며 BRAVE_SEARCH_API_KEY는 런타임 환경변수로만 관리한다.
+- 승인 UI/interrupt/resume과 외부 쓰기 Tool은 이번 범위에 포함하지 않는다.
+
+자세한 설정과 제한은 [agent-runtime README](../agent-runtime/README.md#정책-기반-tool-calling)를 참고한다.
+
+검증 결과: Python 45개 테스트, Go race 테스트, npm 타입 검사/빌드, make dist 통과.
+로컬 Mattermost 및 runtime에 배포했다. Gemini 3.1 Flash-Lite 실제 runtime 호출은 HTTP 200이며,
+checkpoint의 `human → ai(tool_calls=debug_echo) → tool(success) → ai(final)`를 확인했다.
+실제 검색 서비스 호출은 검색 키 설정 후 확인해야 한다. Mattermost 화면에서 Tool 질문을 보낸 뒤
+Bot Thread 답변을 확인하는 운영 검증도 별도이며, 자동 테스트는 설정 전달과 Bot Thread 게시 경로를 검증한다.

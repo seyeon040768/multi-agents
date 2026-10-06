@@ -9,18 +9,19 @@ type Store = {getState: () => any; subscribe: (callback: () => void) => () => vo
 type Registry = {registerRootComponent: (component: React.ComponentType) => void; registerSlashCommandWillBePostedHook: (hook: (message: string, args: any) => any) => void};
 const choices: Record<string, string[]> = {'role.type': ['leader', 'worker', 'reviewer', 'specialist', 'coordinator', 'custom'], 'model.provider': Object.keys(modelCatalog), 'output.format': ['text', 'markdown', 'json', 'structured'], 'behavior.autonomy': ['low', 'medium', 'high']};
 const readonly = new Set(['messenger.provider', 'messenger.user_id', 'messenger.username', 'messenger.bot', 'lifecycle.version', 'lifecycle.created_at', 'lifecycle.updated_at', 'lifecycle.enabled', 'runtime.status', 'runtime.error']);
-const previewTools = [
+const toolOptions = [
+    {id: 'debug-echo', name: 'Debug Echo', description: '입력 문자열을 반환해 Tool 연결을 검증합니다'},
     {id: 'web-search', name: 'Web Search', description: '웹에서 정보를 검색합니다'},
-    {id: 'file-reader', name: 'File Reader', description: '파일 내용을 읽습니다'},
-    {id: 'pdf-reader', name: 'PDF Reader', description: 'PDF 문서를 읽습니다'},
-    {id: 'code-executor', name: 'Code Executor', description: '코드를 실행합니다'},
-    {id: 'vector-search', name: 'Vector Search', description: '저장된 지식을 검색합니다'},
+    {id: 'file-reader', name: 'File Reader', description: '파일 내용을 읽습니다 (준비 중)'},
+    {id: 'pdf-reader', name: 'PDF Reader', description: 'PDF 문서를 읽습니다 (준비 중)'},
+    {id: 'code-executor', name: 'Code Executor', description: '코드를 실행합니다 (준비 중)'},
+    {id: 'vector-search', name: 'Vector Search', description: '저장된 지식을 검색합니다 (준비 중)'},
 ];
 type ChecklistOption = {id: string; name: string; description: string};
 const checklistOptions: Record<string, ChecklistOption[]> = {
-    'tools.allowed': previewTools,
-    'tools.denied': previewTools,
-    'tools.require_confirmation': previewTools,
+    'tools.allowed': toolOptions,
+    'tools.denied': toolOptions,
+    'tools.require_confirmation': toolOptions,
     'context.sources': [
         {id: 'project', name: '프로젝트', description: '프로젝트에서 제공된 정보를 사용합니다'},
         {id: 'conversation', name: '대화', description: '현재 대화의 정보를 사용합니다'},
@@ -156,7 +157,7 @@ function App({store}: {store: Store}) {
             if (!modelCatalog[draft.model.provider]?.some((model) => model.id === draft.model.name)) {setError('선택한 Provider의 모델 목록에서 모델을 선택해주세요.'); return;}
             if (!editing && agents.some((agent) => agent.id === draft.id)) {setError('이미 사용 중인 Agent ID입니다.'); return;}
             void run(() => editing ? updateAgent(draft) : createAgent(draft), () => setDraft(null));
-        }}><p>*는 필수 입력 항목입니다. 기본 정보를 입력하세요. 상세 정책은 아래 펼침 영역에서 수정할 수 있습니다. 도구·컨텍스트 출처·메시지 유형·Capabilities는 체크리스트에서 선택할 수 있습니다. Capabilities와 도구는 임시 목록입니다. 나머지 목록과 객체 항목은 JSON 형식입니다.</p><Fields value={draft} change={change} editing={editing}/><footer><button type='button' onClick={() => {setDraft(null); setError('');}}>취소</button><button disabled={busy} className='primary' type='submit'>{editing ? '저장' : 'Agent 생성'}</button></footer></form> : <div>
+        }}><p>*는 필수 입력 항목입니다. 기본 정보를 입력하세요. 상세 정책은 아래 펼침 영역에서 수정할 수 있습니다. 도구·컨텍스트 출처·메시지 유형·Capabilities는 체크리스트에서 선택할 수 있습니다. 도구는 Web Search와 Debug Echo를 실행할 수 있습니다. 금지·승인 필요로 지정한 도구는 실행하지 않습니다. 준비 중인 도구와 Capabilities는 향후 구현됩니다. 나머지 목록과 객체 항목은 JSON 형식입니다.</p><Fields value={draft} change={change} editing={editing}/><footer><button type='button' onClick={() => {setDraft(null); setError('');}}>취소</button><button disabled={busy} className='primary' type='submit'>{editing ? '저장' : 'Agent 생성'}</button></footer></form> : <div>
             {!agents.length && <div className='agent-empty'><h3>등록된 Agent가 없습니다</h3><p>역할과 모델, 프롬프트를 설정해 첫 Agent를 만들어보세요.</p></div>}
             {agents.map((agent) => <article key={agent.id}><h3>{agent.display_name || agent.name}</h3><p>{agent.messenger.username ? `@${agent.messenger.username}` : 'Bot 연결 대기'} · {agent.description}</p><dl><dt>역할</dt><dd>{agent.role.type}</dd><dt>모델</dt><dd>{agent.model.provider} / {agent.model.name}</dd><dt>도구</dt><dd>{agent.tools.allowed?.length || 0}</dd><dt>상태</dt><dd>{agent.runtime?.status || (agent.lifecycle.enabled ? 'PROVISIONING' : 'DISABLED')}{agent.runtime?.error && <p role='alert'>{agent.runtime.error}</p>}</dd></dl>{admin && <div className='agent-actions'>{(!agent.messenger.user_id || ['ERROR', 'PROVISIONING', 'DELETING'].includes(agent.runtime?.status || '')) && <button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? enableAgent : disableAgent)(agent.id, agent.lifecycle.version));}}>Bot 연결 재시도</button>}<button disabled={busy} onClick={() => {setDraft(JSON.parse(JSON.stringify(agent))); setEditing(true); setError('');}}>설정</button><button disabled={busy} onClick={() => {void run(() => (agent.lifecycle.enabled ? disableAgent : enableAgent)(agent.id, agent.lifecycle.version));}}>{agent.lifecycle.enabled ? '비활성화' : '활성화'}</button><button disabled={busy} className='danger' onClick={() => {setDeleting(agent); setPreserve(false);}}>삭제</button></div>}</article>)}
             {admin && <footer><button disabled={busy} className='primary' onClick={() => {setDraft(freshAgent()); setEditing(false); setError('');}}>＋ Agent 생성</button></footer>}

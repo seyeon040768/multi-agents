@@ -1,11 +1,24 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["system", "user", "assistant"]
     content: str = Field(min_length=1, max_length=65536)
+
+
+class ToolConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    allowed: list[str] = Field(default_factory=list, max_length=64)
+    denied: list[str] = Field(default_factory=list, max_length=64)
+    require_confirmation: list[str] = Field(default_factory=list, max_length=64)
+
+    @field_validator("allowed", "denied", "require_confirmation", mode="before")
+    @classmethod
+    def empty_go_slices(cls, value):
+        return [] if value is None else value
 
 
 class GenerateRequest(BaseModel):
@@ -18,6 +31,7 @@ class GenerateRequest(BaseModel):
     messages: list[Message] = Field(min_length=2, max_length=2)
     temperature: float = Field(ge=0, le=2)
     max_tokens: int = Field(ge=1, le=32768)
+    tools: ToolConfig = Field(default_factory=ToolConfig)
     top_p: float | None = Field(default=None, ge=0, le=1)
 
     @property

@@ -3,7 +3,7 @@
 Mattermost Plugin은 Agent KV 조회·메시지 라우팅·System Prompt·현재 메시지·Bot 게시를 담당한다.
 이 서비스는 LangGraph `START → generate → END`에서 Agent가 선택한 모델을 호출한다.
 OpenAI·Gemini·Claude·Ollama 중 하나로 제한하거나 자동 전환하지 않는다.
-Tool, delegation, 장기 Memory, streaming 및 자동 fallback은 이번 범위에 포함하지 않는다.
+정책 기반 Tool Calling을 지원한다. 승인/interrupt, delegation, 장기 Memory, streaming 및 자동 fallback은 후속 범위다.
 
 | Agent provider | Adapter | 실행 환경 설정 |
 |---|---|---|
@@ -75,7 +75,7 @@ API Key는 Agent 설정 화면이나 Prompt에 입력하지 않는다.
 ```
 
 실제 LangGraph 실행에 mock 모델을 주입해 네 Provider 선택, 인증, Context 구조,
-오류 redaction, timeout/cancel, Tool 호출 거부와 SQLite 재연결·대화 복원·Agent/Thread 분리·중복 요청·저장 실패 처리를 검증한다.
+오류 redaction, timeout/cancel, Tool loop·정책 차단·호출 한도와 SQLite 재연결·대화 복원·Agent/Thread 분리·중복 요청·저장 실패 처리를 검증한다.
 실제 SDK 어댑터도 네 종류 모두 생성하지만 외부 API를 호출하지 않는다.
 Mattermost Resolver/Prompt/Context/Orchestrator/HTTP/Bot reply 테스트는
 `GOCACHE=/tmp/agentbridge-go-cache go test -race ./server/...`로 `agent-bridge`에서 실행한다.
@@ -111,7 +111,7 @@ Mattermost 게시 시각에 따른 정렬이나 Plugin queue의 영속 복구는
 이미 완료한 post.id를 재전송하면 checkpoint의 답변을 반환하여 모델을 다시 호출하지 않는다.
 Mattermost CreatePost 자체의 중복 방지와 실패한 게시의 자동 재시도는 별도 후속 범위다.
 
-모델 입력은 시스템 프롬프트 16 KiB + 최근 최대 20개 메시지/64 KiB로 제한한다.
+모델 입력은 시스템 프롬프트 16 KiB + 완결된 대화 단위로 최근 20개 메시지/64 KiB (현재 Tool 실행 turn은 메시지 수 제한에서 제외)로 제한한다.
 전체 state와 checkpoint 이력은 유지하며 실제 tokenizer, retention, 요약은 아직 적용하지 않는다.
 최근 메시지 선택은 graph.model_context에 모아 이후 summarization을 붙일 수 있다.
 Mattermost는 사용자에게 보이는 원본, checkpoint는 Agent 실행 상태다.
@@ -125,3 +125,35 @@ checkpoint 초기화·읽기·쓰기 오류는 일반 503으로 처리하고 내
 
 설계 근거: [LangGraph Persistence](https://docs.langchain.com/oss/python/langgraph/persistence),
 [AsyncSqliteSaver](https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-sqlite/langgraph/checkpoint/sqlite/aio.py).
+
+
+## 정책 기반 Tool Calling
+
+Go가 KV Agent의 `tools` 전체를 `/v1/generate`에 전달한다. 설정 ID와 모델 함수 이름은 분리한다.
+
+| 설정 ID | 함수 이름 | 구현 |
+|---|---|---|
+| debug-echo | debug_echo | 입력 문자열 반환; 연결 검증용 |
+| web-search | web_search | Brave Search 웹 검색, 제목/URL/snippet 최대 5개 |
+
+네 Provider 모두 LangChain `bind_tools`와 동일한 LangGraph 실행 경로를 사용한다.
+실제 모델/로컬 모델 자체도 function calling을 지원해야 한다.
+`enabled=false`는 Tool을 노출하지 않는다. `allowed - denied - require_confirmation`과 Registry의
+교집합만 bind하며 policy_check와 실행 직전에 재검사한다. 미등록 Tool 및 승인 필요 Tool은 실행하지 않는다.
+
+그래프: `START → generate → policy_check → tools → generate → END`.
+Tool 실패/잘못된 인자/정책 차단은 비밀 정보를 제거한 ToolMessage로 반환하며 최종 답변을 다시 요청한다.
+요청당 호출 시도 최대 10회 (병렬 호출도 각각 계산), Tool당 12초 제한, 웹 요청 10초,
+검색 HTTP 응답 최대 1 MiB, Tool 결과 최대 24 KiB. 한도 이후에는 Tool을 더 실행하지 않고 그래프를 종료한다.
+호출 및 결과는 체크포인트에 보존하며 메시지 창을 자를 때 Tool call/result 쌍을 분리하지 않는다.
+Provider metadata를 보존해 Gemini thought signature 등의 후속 호출 정보를 유지한다.
+
+`web-search`를 사용하려면 `agent-runtime/.env`에 `BRAVE_SEARCH_API_KEY`를 설정하고 런타임을 재생성한다.
+Agent KV에는 검색 키도 저장하지 않는다. 검색 서비스는 모델 Provider와 독립적이다.
+설정하지 않으면 검색 실패 ToolMessage가 반환된다. file-reader/pdf-reader/code-executor/vector-search는
+UI의 향후 설정 항목으로 남아 있으며 Registry에 없으므로 실행되지 않는다.
+
+로그: agent_id, thread_id, tool_id, tool_call_id, 인자 필드명, status, duration_ms, 고정 error code.
+인자 값·전체 결과·SDK 예외 본문·credential은 기록하지 않는다.
+현재 Tool은 조회/검증용이다. 미완료 요청 재시도는 일부 Tool을 다시 실행할 수 있으며,
+향후 외부 쓰기 Tool에는 별도 멱등성/승인 처리가 필요하다.

@@ -84,8 +84,8 @@ async def test_unexpected_tool_call_has_no_execution():
     class Tool:
         async def ainvoke(self, _):
             return AIMessage(content="", tool_calls=[{"name": "shell", "args": {}, "id": "call"}])
-    with pytest.raises(ValueError, match="tool calls"):
-        await invoke_turn(build_graph(lambda _: Tool()), GenerateRequest(**payload()))
+    result = await invoke_turn(build_graph(lambda _: Tool()), GenerateRequest(**payload()))
+    assert "한도" in result["response"]["text"]
 
 
 @pytest.mark.parametrize("provider,model,key", [("openai", "gpt-5.4", "OPENAI_API_KEY"),
@@ -97,6 +97,8 @@ def test_real_provider_adapter_construction(monkeypatch, provider, model, key):
     req = GenerateRequest(**payload(provider, model))
     adapter = create_model(req)
     assert hasattr(adapter, "ainvoke")
+    from agent_runtime.tools.registry import TOOL_REGISTRY
+    assert hasattr(adapter.bind_tools([TOOL_REGISTRY["debug-echo"].tool]), "ainvoke")
     if provider != "ollama":
         assert adapter.max_retries == 0
     req.top_p = 0.8

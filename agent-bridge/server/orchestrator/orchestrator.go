@@ -42,7 +42,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, p *mm.Post) error {
 		if rootID == "" {
 			rootID = p.Id
 		}
-		response, err = o.Models.Generate(ctx, modelclient.GenerateRequest{AgentID: a.ID, RootPostID: rootID, PostID: p.Id, Provider: a.Model.Provider, Model: a.Model.Name, Messages: messages, Temperature: a.Model.Parameters.Temperature, MaxTokens: a.Model.Parameters.MaxTokens, TopP: a.Model.Parameters.TopP})
+		response, err = o.Models.Generate(ctx, modelclient.GenerateRequest{Tools: a.Tools, AgentID: a.ID, RootPostID: rootID, PostID: p.Id, Provider: a.Model.Provider, Model: a.Model.Name, Messages: messages, Temperature: a.Model.Parameters.Temperature, MaxTokens: a.Model.Parameters.MaxTokens, TopP: a.Model.Parameters.TopP})
 	}
 	if err == nil && (response == nil || response.Text == "") {
 		err = fmt.Errorf("empty model response")
