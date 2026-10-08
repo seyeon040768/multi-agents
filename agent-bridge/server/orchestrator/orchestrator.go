@@ -6,6 +6,7 @@ import (
 	"fmt"
 	mm "github.com/mattermost/mattermost/server/public/model"
 	"github.com/seyeon/agent-bridge/server/agent"
+	"github.com/seyeon/agent-bridge/server/fileaccess"
 	"github.com/seyeon/agent-bridge/server/modelclient"
 )
 
@@ -20,12 +21,13 @@ type ApprovalHandler interface {
 }
 type Logger interface{ LogError(string, ...interface{}) }
 type Orchestrator struct {
-	Resolver  AgentResolver
-	Context   ContextBuilder
-	Models    modelclient.Client
-	Messenger Messenger
-	Logger    Logger
-	Approvals ApprovalHandler
+	Attachments func(*mm.Post) []fileaccess.Attachment
+	Resolver    AgentResolver
+	Context     ContextBuilder
+	Models      modelclient.Client
+	Messenger   Messenger
+	Logger      Logger
+	Approvals   ApprovalHandler
 }
 
 func (o *Orchestrator) HandleMessage(ctx context.Context, p *mm.Post) error {
@@ -46,7 +48,11 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, p *mm.Post) error {
 		if rootID == "" {
 			rootID = p.Id
 		}
-		response, err = o.Models.Generate(ctx, modelclient.GenerateRequest{Tools: a.Tools, AgentID: a.ID, RootPostID: rootID, PostID: p.Id, Provider: a.Model.Provider, Model: a.Model.Name, Messages: messages, Temperature: a.Model.Parameters.Temperature, MaxTokens: a.Model.Parameters.MaxTokens, MaxContextTokens: a.Context.MaxContextTokens, TopP: a.Model.Parameters.TopP})
+		attachments := []fileaccess.Attachment{}
+		if o.Attachments != nil {
+			attachments = o.Attachments(p)
+		}
+		response, err = o.Models.Generate(ctx, modelclient.GenerateRequest{Attachments: attachments, RequesterUserID: p.UserId, ChannelID: p.ChannelId, Permissions: a.Permissions, Tools: a.Tools, AgentID: a.ID, RootPostID: rootID, PostID: p.Id, Provider: a.Model.Provider, Model: a.Model.Name, Messages: messages, Temperature: a.Model.Parameters.Temperature, MaxTokens: a.Model.Parameters.MaxTokens, MaxContextTokens: a.Context.MaxContextTokens, TopP: a.Model.Parameters.TopP})
 	}
 	if err == nil && (response == nil || (response.Text == "" && response.Status != "interrupted")) {
 		err = fmt.Errorf("empty model response")

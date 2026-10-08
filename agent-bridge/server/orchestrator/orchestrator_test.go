@@ -7,6 +7,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/seyeon/agent-bridge/server/agent"
 	agentcontext "github.com/seyeon/agent-bridge/server/context"
+	"github.com/seyeon/agent-bridge/server/fileaccess"
 	"github.com/seyeon/agent-bridge/server/messenger/mattermost"
 	"github.com/seyeon/agent-bridge/server/modelclient"
 	"github.com/seyeon/agent-bridge/server/prompt"
@@ -97,6 +98,11 @@ func (f *fakeClient) Generate(ctx context.Context, r modelclient.GenerateRequest
 	require.Equal(f.t, fixture().Context.MaxContextTokens, r.MaxContextTokens)
 	require.Equal(f.t, "root", r.RootPostID)
 	require.Equal(f.t, "current", r.PostID)
+	require.Equal(f.t, "human", r.RequesterUserID)
+	require.Equal(f.t, "channel", r.ChannelID)
+	require.Equal(f.t, fixture().Permissions, r.Permissions)
+	require.Len(f.t, r.Attachments, 1)
+	require.Equal(f.t, "file", r.Attachments[0].FileID)
 	require.Len(f.t, r.Messages, 2)
 	require.Equal(f.t, "system", r.Messages[0].Role)
 	require.Equal(f.t, "user", r.Messages[1].Role)
@@ -126,7 +132,10 @@ func TestMessagePipelineAndLoopPrevention(t *testing.T) {
 				reply = p
 				return p.UserId == "bot" && p.RootId == "root" && p.ChannelId == "channel"
 			})).Return(&mm.Post{}, (*mm.AppError)(nil)).Once()
-			o := &Orchestrator{Resolver: r, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: f, Messenger: &mattermost.Messenger{API: api}, Logger: api}
+			o := &Orchestrator{Resolver: r, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: f, Attachments: func(post *mm.Post) []fileaccess.Attachment {
+				require.Equal(t, "current", post.Id)
+				return []fileaccess.Attachment{{FileID: "file", Name: "project.md", MimeType: "text/markdown", Size: 120}}
+			}, Messenger: &mattermost.Messenger{API: api}, Logger: api}
 			err := o.HandleMessage(context.Background(), p)
 			require.Equal(t, fail, err != nil)
 			require.Equal(t, 1, f.calls)

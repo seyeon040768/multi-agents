@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/seyeon/agent-bridge/server/agent"
+	"github.com/seyeon/agent-bridge/server/fileaccess"
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,11 @@ func TestRuntimeHTTPContract(t *testing.T) {
 		require.Equal(t, "researcher", req.AgentID)
 		require.Equal(t, "root", req.RootPostID)
 		require.Equal(t, "post", req.PostID)
+		require.True(t, req.Permissions.Files.Read)
+		require.Equal(t, "requester", req.RequesterUserID)
+		require.Equal(t, "channel", req.ChannelID)
+		require.Len(t, req.Attachments, 1)
+		require.Equal(t, "file", req.Attachments[0].FileID)
 		require.Equal(t, "anthropic", req.Provider)
 		require.Equal(t, "claude-sonnet-4-6", req.Model)
 		require.Equal(t, agent.AgentTools{Enabled: true, Allowed: []string{"debug-echo"}, Denied: []string{"web-search"}, RequireConfirmation: []string{"debug-echo"}}, req.Tools)
@@ -30,7 +36,7 @@ func TestRuntimeHTTPContract(t *testing.T) {
 	defer server.Close()
 	client := &LangGraph{URL: server.URL, Token: "test-token"}
 	budget := int64(12000)
-	resp, err := client.Generate(context.Background(), GenerateRequest{MaxContextTokens: &budget, Tools: agent.AgentTools{Enabled: true, Allowed: []string{"debug-echo"}, Denied: []string{"web-search"}, RequireConfirmation: []string{"debug-echo"}}, AgentID: "researcher", RootPostID: "root", PostID: "post", Provider: "anthropic", Model: "claude-sonnet-4-6"})
+	resp, err := client.Generate(context.Background(), GenerateRequest{RequesterUserID: "requester", ChannelID: "channel", Attachments: []fileaccess.Attachment{{FileID: "file", Name: "project.md", MimeType: "text/markdown", Size: 120}}, Permissions: agent.AgentPermissions{Files: agent.AgentPermissionsFiles{Read: true}}, MaxContextTokens: &budget, Tools: agent.AgentTools{Enabled: true, Allowed: []string{"debug-echo"}, Denied: []string{"web-search"}, RequireConfirmation: []string{"debug-echo"}}, AgentID: "researcher", RootPostID: "root", PostID: "post", Provider: "anthropic", Model: "claude-sonnet-4-6"})
 	require.NoError(t, err)
 	require.Equal(t, "answer", resp.Text)
 	ctx, cancel := context.WithCancel(context.Background())

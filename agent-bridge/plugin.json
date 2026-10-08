@@ -30,6 +30,13 @@
         "secret": true,
         "default": "",
         "help_text": "Must match AGENT_RUNTIME_TOKEN on the runtime. Provider API keys belong in runtime environment variables."
+      },
+      {
+        "key": "BotTeamName",
+        "display_name": "Agent Bot Team Name",
+        "type": "text",
+        "default": "happyseyeon",
+        "help_text": "Automatically join newly provisioned Agent bots to this existing team. Use the team URL name, e.g. happyseyeon. Empty values also use happyseyeon. Channels must be joined separately."
       }
     ]
   },

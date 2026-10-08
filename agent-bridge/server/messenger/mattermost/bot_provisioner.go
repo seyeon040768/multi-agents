@@ -15,9 +15,46 @@ import (
 
 const pluginID = "com.seyeon.agentbridge"
 
-type BotProvisioner struct{ api plugin.API }
+type BotProvisioner struct {
+	api      plugin.API
+	teamName func() string
+}
 
-func NewBotProvisioner(api plugin.API) *BotProvisioner { return &BotProvisioner{api: api} }
+func NewBotProvisioner(api plugin.API, teamName ...func() string) *BotProvisioner {
+	provisioner := &BotProvisioner{api: api}
+	if len(teamName) > 0 {
+		provisioner.teamName = teamName[0]
+	}
+	return provisioner
+}
+
+// Ensure membership before an Agent becomes ACTIVE. The Bot identity has already
+// been persisted by the service, so a failed join can be retried without duplicates.
+func (p *BotProvisioner) ensureTeam(userID string) error {
+	if p.teamName == nil {
+		return nil
+	}
+	name := strings.TrimSpace(p.teamName())
+	if name == "" {
+		return fmt.Errorf("automatic Bot team is not configured")
+	}
+	team, appErr := p.api.GetTeamByName(name)
+	if appErr != nil || team == nil || team.DeleteAt != 0 {
+		return fmt.Errorf("automatic Bot team %q is unavailable", name)
+	}
+	member, appErr := p.api.GetTeamMember(team.Id, userID)
+	if appErr == nil && member != nil && member.DeleteAt == 0 {
+		return nil
+	}
+	if appErr != nil && appErr.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("Mattermost Bot team membership lookup failed")
+	}
+	member, appErr = p.api.CreateTeamMember(team.Id, userID)
+	if appErr != nil || member == nil || member.DeleteAt != 0 {
+		return fmt.Errorf("Mattermost Bot could not join team %q", name)
+	}
+	return nil
+}
 func (p *BotProvisioner) Lock(id string) (func(), error) {
 	mutex, err := cluster.NewMutex(p.api, "agent-bot:v1:"+id)
 	if err != nil {
@@ -87,6 +124,9 @@ func (p *BotProvisioner) Update(a *agent.Agent) (*agent.BotInfo, error) {
 	}
 	if info.UserID != *a.Messenger.UserID {
 		return nil, fmt.Errorf("bot identity changed")
+	}
+	if err := p.ensureTeam(info.UserID); err != nil {
+		return nil, err
 	}
 	if err := p.syncAvatar(a, info.UserID); err != nil {
 		return nil, err

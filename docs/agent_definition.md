@@ -16,9 +16,11 @@
 - `agent.model.provider`는 Provider 식별자이고 `agent.model.name`은 실제 API 모델 ID다. `model_id` 필드로 대체하지 않는다.
 - Prompt는 `agent.prompts`의 여섯 필드로 관리한다. 별도 단일 `system_prompt` 필드를 추가하지 않는다.
 - Tool은 `agent.tools.enabled`, `allowed`, `denied`, `require_confirmation`으로 관리한다. 세 선택 목록은 Tool ID 문자열 배열이다.
+- File Reader 실행 권한은 `agent.permissions.files.read`다. `file_read`라는 별도 필드를 추가하지 않는다. `tools.enabled=true`·allowed 포함·denied 제외와 이 권한을 모두 만족해야 파일에 접근한다. `require_confirmation` 포함 시 기존 승인 흐름도 통과해야 한다.
 - `role.capabilities`, `context.sources`, `communication.allowed_message_types`는 문자열 배열이다. 체크리스트에서도 배열 구조를 유지한다.
 - Boolean 필드는 YAML Boolean으로 저장한다. 체크박스가 비활성화되어도 저장된 값을 지우지 않는다.
 - `enabled`가 있는 그룹의 UI는 해당 값이 false이면 나머지 하위 입력 요소를 비활성화하고, 다시 true로 변경하면 보존된 값을 편집할 수 있게 한다.
+- Bot의 기본 팀 자동 가입은 Plugin 전역 설정 `Agent Bot Team Name`으로 관리한다(기본 `happyseyeon`). Agent 스키마에 팀 설정을 추가하지 않는다.
 - Messenger 연결 정보와 Lifecycle 정보는 시스템이 관리한다. `messenger.profile`은 사용자 설정이며 연결 ID와 구분한다.
 - 별도 Memory Policy, Response Policy, Task Limits는 아직 정의하지 않았다. Bot ID는 messenger.user_id에 저장한다. runtime.status는 PROVISIONING, ACTIVE, DISABLED, ERROR, DELETING이며 runtime.error는 오류 문자열 또는 null이다. 두 필드는 서버가 관리한다.
 
@@ -306,6 +308,7 @@ agent:
   # ---------------------------------------------------------------------------
   permissions:
     files:
+      # file-reader 실행에 실제 적용. 현재 요청 Post의 텍스트 첨부만 지원.
       read: true
       write: false
 

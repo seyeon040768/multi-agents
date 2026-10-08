@@ -21,6 +21,26 @@ class ToolConfig(BaseModel):
         return [] if value is None else value
 
 
+class FilePermissions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    read: bool = False
+    write: bool = False
+
+
+class Permissions(BaseModel):
+    # Other canonical permissions are transported but are not executed here.
+    model_config = ConfigDict(extra="allow")
+    files: FilePermissions = Field(default_factory=FilePermissions)
+
+
+class Attachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    file_id: str = Field(pattern=r"^[a-z0-9]{26}$")
+    name: str = Field(min_length=1, max_length=1024)
+    mime_type: str = Field(max_length=256)
+    size: int = Field(ge=0)
+
+
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_id: str = Field(pattern=r"^[a-z][a-z0-9._-]{2,31}$")
@@ -33,6 +53,16 @@ class GenerateRequest(BaseModel):
     max_tokens: int = Field(ge=1, le=32768)
     max_context_tokens: int | None = Field(default=None, ge=512, le=2000000)
     tools: ToolConfig = Field(default_factory=ToolConfig)
+    permissions: Permissions = Field(default_factory=Permissions)
+    requester_user_id: str | None = Field(default=None, pattern=r"^[a-z0-9]{26}$")
+    channel_id: str | None = Field(default=None, pattern=r"^[a-z0-9]{26}$")
+    attachments: list[Attachment] = Field(default_factory=list, max_length=32)
+
+    @field_validator("attachments", mode="before")
+    @classmethod
+    def empty_attachments(cls, value):
+        return [] if value is None else value
+
     top_p: float | None = Field(default=None, ge=0, le=1)
 
     @property
@@ -64,6 +94,7 @@ class ResumeRequest(BaseModel):
     approval_id: str = Field(pattern=r"^apr_[a-f0-9]{32}$")
     decision: Literal["approve", "reject", "expire"]
     tools: ToolConfig
+    permissions: Permissions = Field(default_factory=Permissions)
 
     @property
     def thread_id(self):

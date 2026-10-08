@@ -4,6 +4,7 @@ from enum import Enum
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 from .web_search import web_search
+from .file_reader import read_file
 
 
 class EchoInput(BaseModel):
@@ -29,6 +30,7 @@ class ToolSpec:
 
 
 TOOL_REGISTRY = {
+    "file-reader": ToolSpec("file-reader", "read_file", read_file, read_file.description),
     "debug-echo": ToolSpec("debug-echo", "debug_echo", debug_echo, debug_echo.description),
     "web-search": ToolSpec("web-search", "web_search", web_search, web_search.description),
 }

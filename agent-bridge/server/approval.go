@@ -62,6 +62,25 @@ func (p *Plugin) Request(ctx context.Context, a *agent.Agent, source *model.Post
 		if len(args) > 8000 { // Never ask users to approve partially displayed arguments.
 			return fmt.Errorf("approval arguments too large")
 		}
+		if call.ToolID == "file-reader" && call.Name == "read_file" {
+			var args struct {
+				FileID string `json:"file_id"`
+			}
+			if json.Unmarshal(call.Args, &args) == nil {
+				for _, id := range source.FileIds {
+					if id != args.FileID {
+						continue
+					}
+					info, e := p.API.GetFileInfo(id)
+					if e == nil && info != nil && info.PostId == source.Id && info.DeleteAt == 0 {
+						// JSON escaping prevents filenames from injecting Markdown.
+						label, _ := json.Marshal(map[string]string{"file_name": info.Name})
+						text += "현재 첨부 파일을 읽으려고 합니다.\n```json\n" + string(label) + "\n```\n"
+					}
+					break
+				}
+			}
+		}
 		text += "Tool: **" + call.ToolID + "**\n```json\n" + args + "\n```\n"
 	}
 	if len([]rune(text)) > 14000 {
@@ -223,7 +242,7 @@ func (p *Plugin) processApproval(item *pendingApproval) {
 		tools.Enabled = false
 	}
 	cfg := p.getConfiguration()
-	result, err := (&modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}).Resume(ctx, modelclient.ResumeRequest{AgentID: item.AgentID, RootPostID: item.RootPostID, ApprovalID: item.ID, Decision: item.Decision, Tools: tools})
+	result, err := (&modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}).Resume(ctx, modelclient.ResumeRequest{AgentID: item.AgentID, RootPostID: item.RootPostID, ApprovalID: item.ID, Decision: item.Decision, Tools: tools, Permissions: a.Permissions})
 	if err != nil {
 		p.finishApproval(item, "FAILED")
 		return

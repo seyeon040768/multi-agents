@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/seyeon/agent-bridge/server/agent"
 	"github.com/seyeon/agent-bridge/server/command"
 	agentcontext "github.com/seyeon/agent-bridge/server/context"
+	"github.com/seyeon/agent-bridge/server/fileaccess"
 	"github.com/seyeon/agent-bridge/server/messenger/mattermost"
 	"github.com/seyeon/agent-bridge/server/modelclient"
 	"github.com/seyeon/agent-bridge/server/orchestrator"
@@ -63,7 +65,13 @@ func (p *Plugin) OnActivate() error {
 
 	p.commandClient = command.NewCommandHandler(p.client)
 
-	bots := mattermost.NewBotProvisioner(p.API)
+	bots := mattermost.NewBotProvisioner(p.API, func() string {
+		name := strings.TrimSpace(p.getConfiguration().BotTeamName)
+		if name == "" {
+			return "happyseyeon"
+		}
+		return name
+	})
 	p.agents = agent.NewServiceWithBots(agent.NewKVAgentStore(p.API), bots, bots.Lock)
 	p.router = p.initRouter()
 
@@ -126,7 +134,7 @@ func (p *Plugin) startChat() {
 				case post := <-p.chatQueue:
 					cfg := p.getConfiguration()
 					store := agent.NewKVAgentStore(p.API)
-					o := &orchestrator.Orchestrator{Resolver: &orchestrator.Resolver{API: p.API, Agents: store}, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: &modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}, Messenger: &mattermost.Messenger{API: p.API}, Logger: p.API, Approvals: p}
+					o := &orchestrator.Orchestrator{Resolver: &orchestrator.Resolver{API: p.API, Agents: store}, Context: &agentcontext.Builder{Prompt: prompt.Builder{}}, Models: &modelclient.LangGraph{URL: cfg.LangGraphURL, Token: cfg.LangGraphToken}, Messenger: &mattermost.Messenger{API: p.API}, Logger: p.API, Approvals: p, Attachments: (fileaccess.Service{API: p.API}).Attachments}
 					ctx, cancel := context.WithTimeout(p.chatCtx, 90*time.Second)
 					if err := o.HandleMessage(ctx, post); err != nil {
 						p.API.LogError("Agent message processing failed", "post_id", post.Id)

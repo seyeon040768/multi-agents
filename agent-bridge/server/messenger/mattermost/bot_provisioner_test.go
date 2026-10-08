@@ -97,3 +97,80 @@ func TestPrivateAvatarRejected(t *testing.T) {
 	_, err = client.Get("https://[::1]/avatar.png")
 	require.Error(t, err)
 }
+
+func TestAutomaticTeamMembership(t *testing.T) {
+	for _, mode := range []string{"new", "already_member", "removed", "missing_team", "deleted_team", "lookup_failed", "join_failed", "blank"} {
+		t.Run(mode, func(t *testing.T) {
+			api := &plugintest.API{}
+			p := NewBotProvisioner(api, func() string {
+				if mode == "blank" {
+					return " "
+				}
+				return "happyseyeon"
+			})
+			team := &model.Team{Id: "team-id", Name: "happyseyeon"}
+			if mode == "deleted_team" {
+				team.DeleteAt = 1
+			}
+			if mode == "missing_team" {
+				api.On("GetTeamByName", "happyseyeon").Return((*model.Team)(nil), notFound()).Once()
+			} else if mode != "blank" {
+				api.On("GetTeamByName", "happyseyeon").Return(team, (*model.AppError)(nil)).Once()
+			}
+			switch mode {
+			case "already_member":
+				api.On("GetTeamMember", "team-id", "bot-id").Return(&model.TeamMember{TeamId: "team-id", UserId: "bot-id"}, (*model.AppError)(nil)).Once()
+			case "removed":
+				api.On("GetTeamMember", "team-id", "bot-id").Return(&model.TeamMember{DeleteAt: 1}, (*model.AppError)(nil)).Once()
+			case "lookup_failed":
+				api.On("GetTeamMember", "team-id", "bot-id").Return((*model.TeamMember)(nil), model.NewAppError("test", "test", nil, "internal credential", 500)).Once()
+			case "new", "join_failed":
+				api.On("GetTeamMember", "team-id", "bot-id").Return((*model.TeamMember)(nil), notFound()).Once()
+			}
+			switch mode {
+			case "new", "removed":
+				api.On("CreateTeamMember", "team-id", "bot-id").Return(&model.TeamMember{TeamId: "team-id", UserId: "bot-id"}, (*model.AppError)(nil)).Once()
+			case "join_failed":
+				api.On("CreateTeamMember", "team-id", "bot-id").Return((*model.TeamMember)(nil), model.NewAppError("test", "test", nil, "internal credential", 500)).Once()
+			}
+			err := p.ensureTeam("bot-id")
+			if mode == "new" || mode == "removed" || mode == "already_member" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				require.NotContains(t, err.Error(), "internal credential")
+			}
+			if mode != "new" && mode != "removed" && mode != "join_failed" {
+				api.AssertNotCalled(t, "CreateTeamMember", mock.Anything, mock.Anything)
+			}
+			api.AssertExpectations(t)
+		})
+	}
+}
+
+func TestTeamJoinFailureRetriesSameBot(t *testing.T) {
+	api := &plugintest.API{}
+	p := NewBotProvisioner(api, func() string { return "happyseyeon" })
+	a := agent.DefaultAgent()
+	a.ID = "researcher"
+	a.Name = "Researcher"
+	userID := "bot-id"
+	a.Messenger.UserID = &userID
+	bot := &model.Bot{UserId: userID, Username: "agent-researcher", OwnerId: pluginID}
+	api.On("GetBot", userID, true).Return(bot, (*model.AppError)(nil))
+	api.On("GetUserByUsername", bot.Username).Return(&model.User{Id: userID}, (*model.AppError)(nil))
+	api.On("PatchBot", userID, mock.Anything).Return(bot, (*model.AppError)(nil))
+	api.On("GetTeamByName", "happyseyeon").Return(&model.Team{Id: "team-id"}, (*model.AppError)(nil))
+	api.On("GetTeamMember", "team-id", userID).Return((*model.TeamMember)(nil), notFound())
+	api.On("CreateTeamMember", "team-id", userID).Return((*model.TeamMember)(nil), model.NewAppError("test", "test", nil, "join failure", 500)).Once()
+	_, err := p.Update(&a)
+	require.Error(t, err)
+	api.AssertNotCalled(t, "SetProfileImage", mock.Anything, mock.Anything)
+	api.On("CreateTeamMember", "team-id", userID).Return(&model.TeamMember{TeamId: "team-id", UserId: userID}, (*model.AppError)(nil)).Once()
+	api.On("SetProfileImage", userID, mock.Anything).Return((*model.AppError)(nil)).Once()
+	info, err := p.Update(&a)
+	require.NoError(t, err)
+	require.Equal(t, userID, info.UserID)
+	api.AssertNotCalled(t, "CreateBot", mock.Anything)
+	api.AssertExpectations(t)
+}

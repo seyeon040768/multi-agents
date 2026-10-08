@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/seyeon/agent-bridge/server/agent"
+	"github.com/seyeon/agent-bridge/server/fileaccess"
 	"time"
 )
 
@@ -12,17 +13,21 @@ type Message struct {
 	Content string `json:"content"`
 }
 type GenerateRequest struct {
-	MaxContextTokens *int64           `json:"max_context_tokens"`
-	Tools            agent.AgentTools `json:"tools"`
-	AgentID          string           `json:"agent_id"`
-	RootPostID       string           `json:"root_post_id"`
-	PostID           string           `json:"post_id"`
-	Provider         string           `json:"provider"`
-	Model            string           `json:"model"`
-	Messages         []Message        `json:"messages"`
-	Temperature      float64          `json:"temperature"`
-	MaxTokens        int64            `json:"max_tokens"`
-	TopP             *float64         `json:"top_p"`
+	Permissions      agent.AgentPermissions  `json:"permissions"`
+	RequesterUserID  string                  `json:"requester_user_id"`
+	ChannelID        string                  `json:"channel_id"`
+	Attachments      []fileaccess.Attachment `json:"attachments"`
+	MaxContextTokens *int64                  `json:"max_context_tokens"`
+	Tools            agent.AgentTools        `json:"tools"`
+	AgentID          string                  `json:"agent_id"`
+	RootPostID       string                  `json:"root_post_id"`
+	PostID           string                  `json:"post_id"`
+	Provider         string                  `json:"provider"`
+	Model            string                  `json:"model"`
+	Messages         []Message               `json:"messages"`
+	Temperature      float64                 `json:"temperature"`
+	MaxTokens        int64                   `json:"max_tokens"`
+	TopP             *float64                `json:"top_p"`
 }
 type ApprovalCall struct {
 	ToolID     string          `json:"tool_id"`
@@ -38,11 +43,12 @@ type ApprovalInterrupt struct {
 	ExpiresAt  time.Time      `json:"expires_at"`
 }
 type ResumeRequest struct {
-	AgentID    string           `json:"agent_id"`
-	RootPostID string           `json:"root_post_id"`
-	ApprovalID string           `json:"approval_id"`
-	Decision   string           `json:"decision"`
-	Tools      agent.AgentTools `json:"tools"`
+	Permissions agent.AgentPermissions `json:"permissions"`
+	AgentID     string                 `json:"agent_id"`
+	RootPostID  string                 `json:"root_post_id"`
+	ApprovalID  string                 `json:"approval_id"`
+	Decision    string                 `json:"decision"`
+	Tools       agent.AgentTools       `json:"tools"`
 }
 type GenerateResponse struct {
 	Status         string             `json:"status,omitempty"`

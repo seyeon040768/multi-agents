@@ -4,16 +4,16 @@
 
 Mattermost Agent Bridge Plugin과 별도 Python LangGraph 실행 서비스로 Agent 관리부터 단일 Agent 텍스트 대화까지 제공한다.
 
-2026-10-08 코드 확인 기준으로 **Agent 관리·영속 저장 → Mattermost Bot 관리 → 단일 Agent 대화 → Thread Memory → 정책 기반 Tool Calling → 사람 승인/재개 → Token Budget·Thread 요약**까지 구현되어 있다. 2026-10-07까지의 기록에는 로컬 배포와 Gemini 실제 DM·검색·승인 재개 검증이 포함된다. 이번 Context 개발은 Mock 모델 기반 자동 테스트로 검증했으며, 외부 모델 호출과 Mattermost 수동 E2E는 다시 수행하지 않았다.
+2026-10-08 코드 확인 기준으로 **Agent 관리·영속 저장 → Mattermost Bot 관리 → 단일 Agent 대화 → Thread Memory → 정책 기반 Tool Calling → 사람 승인/재개 → Token Budget·Thread 요약 → 권한 기반 File Reader**까지 구현되어 있다. 2026-10-07까지의 기록에는 로컬 배포와 Gemini 실제 DM·검색·승인 재개 검증이 포함된다. Context와 File Reader는 Mock 기반 자동 테스트로 검증했다. 이후 2026-10-08 실제 DM에서 project.md 읽기와 Gemini Thread 답변을 확인했고, Bot 기본 팀 자동 가입 변경도 로컬 Plugin에 반영했다.
 
 - Agent 설정은 Mattermost Plugin KV Store에 영속 저장한다.
 - Modal을 열 때마다 서버 목록을 조회하고, 생성·수정·활성화·삭제 성공 후 목록을 다시 조회한다.
 - 브라우저 새로고침과 Plugin 재시작 후에도 같은 KV 데이터를 읽는다.
-- 실제 Mattermost Bot 생성·프로필 동기화·활성화·비활성화·삭제와 Bot user ID → Agent ID 역방향 조회를 제공한다.
+- 실제 Mattermost Bot 생성·프로필 동기화·활성화·비활성화·삭제와 Bot user ID → Agent ID 역방향 조회를 제공한다. 생성 완료 전에 기본 팀 `happyseyeon`에 자동 가입한다.
 - 단일 Agent의 DM·mention을 처리하고 System Prompt와 현재 메시지를 LangGraph에 전달하고 SQLite checkpoint에서 이전 대화를 복원해 Bot으로 같은 Thread에 답변한다.
 - OpenAI·Gemini·Claude·Ollama 어댑터를 제공하며 Agent 설정의 Provider와 모델을 사용한다. 실제 외부 호출은 Gemini로 검증했다.
 - 인증 정보는 실행 서비스 환경 변수로 관리하고, 플러그인은 별도의 Runtime URL/Token으로 실행 서비스에 인증한다.
-- Debug Echo와 Brave Web Search를 정책에 따라 실행한다. 승인 필요 Tool은 LangGraph interrupt로 중단하고 Mattermost 승인/거절 버튼과 인증된 resume API로 재개한다.
+- Debug Echo·Brave Web Search·현재 Post의 텍스트 첨부 File Reader를 정책에 따라 실행한다. File Reader는 `permissions.files.read`도 검사한다. 승인 필요 Tool은 LangGraph interrupt로 중단하고 Mattermost 승인/거절 버튼과 인증된 resume API로 재개한다.
 - 장기 Memory, Multi-Agent 위임 및 Task 관리는 아직 구현하지 않았다.
 
 | 영역 | 현재 상태 |
@@ -25,7 +25,8 @@ Mattermost Agent Bridge Plugin과 별도 Python LangGraph 실행 서비스로 Ag
 | Token Budget·점진적 Thread 요약·재시작 복원 | 구현 |
 | Debug Echo·Brave Web Search | 구현 |
 | 사람 승인·거절·만료·재개 및 접수된 결정 복구 | 구현 |
-| 파일·PDF·코드·Vector Search 실행 | 준비 중 |
+| 현재 Post 텍스트 File Reader·파일 접근 권한 | 구현, 실제 DM·Gemini 답변 확인 |
+| PDF·코드·Vector Search 실행 | 준비 중 |
 | Multi-Agent 협업·Task·장기 Memory | 미구현 |
 
 ## 2. 설정 구조의 기준
@@ -174,7 +175,7 @@ model:
 |---|---|---|
 | Debug Echo | `debug-echo` | 구현 |
 | Web Search | `web-search` | 구현: Brave Search API, 검색 Key 필요 |
-| File Reader | `file-reader` | 준비 중 |
+| File Reader | `file-reader` | 구현: 현재 Post 텍스트 첨부, `permissions.files.read` 필요 |
 | PDF Reader | `pdf-reader` | 준비 중 |
 | Code Executor | `code-executor` | 준비 중 |
 | Vector Search | `vector-search` | 준비 중 |
@@ -356,6 +357,7 @@ Agent의 이름·표시 이름·설명·avatar·messenger.profile 변경 시 Bot
 
 Mattermost의 EnsureBotUser는 플러그인 KV의 단일 botuser 키를 재사용하므로 여러 Agent에 사용하지 않는다.
 독립 Bot은 CreateBot으로 만들고 기존 소유 Bot은 PatchBot으로 갱신한다.
+Bot 연결 정보를 저장한 뒤, ACTIVE 전환 전에 Plugin 설정 `Agent Bot Team Name`의 기존 팀에 자동 가입한다. 기본값과 빈 값의 fallback은 `happyseyeon`(HappySeyeon)이다. 표시 이름 대신 팀 URL 이름을 사용하며 Agent 설정에는 팀 필드를 추가하지 않는다. 이미 가입한 Bot은 중복 가입하지 않고, 삭제된 membership은 복구한다. 팀 조회·가입 실패는 기존 ERROR 상태로 기록하며 같은 Agent를 다시 활성화하면 기존 Bot으로 재시도한다. 설정 변경은 다음 생성·프로필 갱신·활성화부터 적용된다. 채널은 사용자가 별도로 추가한다.
 같은 username의 일반 사용자나 다른 소유자의 Bot은 채택하거나 변경하지 않는다.
 참조: [Mattermost EnsureBot 구현](https://github.com/mattermost/mattermost/blob/master/server/channels/app/bot.go).
 
@@ -592,4 +594,34 @@ Graph 시작에 `prepare_context`를 실행한다. 짧은 대화는 별도 요�
 
 Mock 자동 테스트로 짧은/긴 대화, 점진 갱신과 중복 방지, 최근 원문 보존, 큰 요약 입력 분할, Summary 크기 제한·설정 축소, SQLite 재시작 복원, 완결 Tool Turn 보존, 승인 대기·거절 재개 보호, 요약 실패 재시도, 현재 입력 초과를 검증했다. Python 전체 70개 테스트와 Go 서버 전체 `go test -race ./server/...`가 통과했다. 실제 Gemini 호출 및 운영 배포는 이번 단계에서 수행하지 않았다.
 
-Thread Summary는 동일 Mattermost Thread의 대화 연속성을 위한 기능이다. Long-term Memory·File Reader·PDF Reader·Code Executor·Vector Search·Multi-Agent·Task·Audit Log는 이번 범위에서 추가하지 않았다. 다음 단계는 File Reader에 `tools` 정책과 `permissions.file_read`를 함께 적용하는 것이다.
+Thread Summary는 동일 Mattermost Thread의 대화 연속성을 위한 기능이다. Long-term Memory·File Reader·PDF Reader·Code Executor·Vector Search·Multi-Agent·Task·Audit Log는 이번 범위에서 추가하지 않았다. 후속 File Reader 단계(20절)는 `tools` 정책과 기준 문서의 `permissions.files.read`를 함께 적용한다.
+
+
+## 20. File Reader 및 파일 접근 권한
+
+설정 ID는 `file-reader`, 모델 함수 이름은 `read_file(file_id)`다. 경로·URL·추가 인자는 허용하지 않는다. 기준 문서의 `permissions.files.read`를 사용하며 `permissions.file_read`로 평탄화하지 않는다. tools.enabled·allowed·denied·파일 읽기 권한을 모두 검사한다. 파일 권한이 꺼져 있으면 모델에 함수도 노출하지 않으며, 위조 호출은 실행 직전에 다시 차단한다.
+
+Go Plugin은 현재 사용자 Post에서 최대 32개의 첨부 metadata(file_id/name/mime_type/size)를 Runtime에 전달한다. 초기 LLM 입력에는 metadata만 포함한다. 현재 Post에 직접 첨부된 파일만 읽으며, 같은 Thread의 과거 Post 첨부도 이번 버전에서는 지원하지 않는다. 이전 파일은 새 요청에 다시 첨부해야 한다.
+
+실행 시 Runtime이 고정 환경 주소 `AGENT_BRIDGE_URL`의 `POST /api/internal/files/read`를 호출한다. Plugin base URL 예시는 `http://mattermost:8065/plugins/com.seyeon.agentbridge`다. 이 API는 브라우저 관리 API `/api/v1`와 분리하고 `AGENT_RUNTIME_TOKEN`과 같은 Plugin `LangGraphToken`으로 Bearer 인증한다. Mattermost 관리자 Token을 Runtime에 전달하지 않는다. 주소·Token은 모델 인자와 checkpoint에 저장하지 않으며, callback은 redirect·환경 proxy를 사용하지 않는다.
+
+Plugin은 최신 Agent 상태·Tool/파일 권한을 확인하고, 원본 Post에서 같은 Agent가 실제 호출 대상인지 다시 resolve한다. 원본 Post의 작성자·채널, 요청자와 Bot의 현재 채널 membership·read_channel 권한, 삭제 상태, Post.file_ids 및 FileInfo.post_id 일치를 검증한 후에만 파일을 다운로드한다. 파일 ID만 아는 다른 채널·Post 접근은 거부한다.
+
+지원 확장자는 `.txt`, `.md`, `.csv`, `.json`, `.yaml`, `.yml`, `.log`다. MIME은 text/*, application/json, application/yaml, application/x-yaml을 허용한다. application/octet-stream은 이 확장자와 유효 UTF-8·NUL 없음 검사를 모두 통과한 텍스트에 한해 허용한다. UTF-8을 지원하며 다른 encoding, 바이너리, PDF·Office·이미지·압축 파일은 안전한 오류로 거절한다. 다운로드 전 metadata의 2 MiB 한도를 검사하고, 실제 반환 bytes도 재검사한다. Plugin API의 GetFile은 전체 bytes를 반환하므로 다운로드 도중 스트리밍 중단 기능은 제공하지 않는다.
+
+파일 내용은 최대 20 KiB에서 시작하되 현재 Turn·System Prompt·Summary·Tool schema·병렬 결과 여유를 반영해 더 줄인다. UTF-8 경계를 보존하고 JSON escaping 및 ToolMessage framing을 같은 Token Estimator로 다시 계산한다. 최종 도구 메시지는 기존 24 KiB 결과 제한도 지킨다. 일부만 반환하면 `truncated=true`이며 모델에 읽지 않은 내용 추측 금지·축약 고지·파일 내용의 지시를 따르지 않도록 안내한다.
+
+`require_confirmation`이면 기존 interrupt와 Mattermost 버튼을 사용한다. 승인 요청에 정확한 file_id를 표시하며, checkpoint에는 원래 requester/channel/post와 첨부 metadata를 보존한다. Runtime 재시작 후 동일 ID로 resume하고 최신 permissions/tools를 다시 적용한다. Plugin 내부 API도 승인 KV의 APPROVED/approve·미완료·미만료 상태와 원본 요청·정확한 file_id를 검증한다. 거절 시 파일을 다운로드하지 않는다.
+
+오류는 FILE_PERMISSION_DENIED, FILE_NOT_ATTACHED, FILE_NOT_FOUND, FILE_TOO_LARGE, FILE_TYPE_NOT_SUPPORTED, FILE_READ_FAILED, FILE_CONTEXT_LIMIT 등 안전한 코드로 ToolMessage에 전달한다. 내부 응답 본문·Stack Trace·자격 증명은 모델에 전달하지 않는다. 로그는 agent_id/thread_id/post_id/tool_id/file_id/file_name/file_size/status/duration_ms/truncated/error_code만 기록하며 파일 전체 내용은 기록하지 않는다. 파일 내용은 ToolMessage로 기존 SQLite checkpoint에 저장되므로 checkpoint 데이터의 접근 권한은 운영 환경에서 관리해야 한다.
+
+검증 범위는 Mock 모델·HTTP·Mattermost API 기반 자동 테스트다. 정책/Permission/denied, 승인·거절·권한 회수, SQLite 재시작 후 승인 재개, callback 인증·승인 증명, 다른 채널/Post/파일 ID 차단, 형식·파일 크기·UTF-8·내용 축약, Context Budget과 로그 비노출을 검사한다. 초기 개발 중 실제 E2E는 미수행이었으나, 이후 사용자 테스트에서 DM의 `project.md → read_file → Gemini → Thread Reply`를 서버 로그와 게시된 답변으로 확인했다. 채널 mention은 Bot의 팀·채널 미가입으로 차단됐고 HappySeyeon/agents-playground에 가입시켰다. Python 전체 92개, Go 서버 `go test -race ./server/...`, UI 타입 검사·프로덕션 빌드가 통과했다. Linux amd64 설치 패키지도 빌드했다. File Reader와 기본 팀 자동 가입을 포함한 최신 Plugin을 로컬 Mattermost에 설치·활성화했으며 빌드한 서버 바이너리와 설치된 바이너리의 SHA-256 일치를 확인했다.
+
+PDF/Office/OCR, 쓰기·삭제, Code Execution, Vector Search, 장기 Memory, Multi-Agent는 추가하지 않았다. 다음 단계 PDF Reader는 같은 파일 접근 계층을 재사용한다.
+
+
+## 21. Bot 기본 팀 자동 가입
+
+새 Agent 생성 시 Bot 연결 정보 저장 → 기본 팀 가입 → 프로필 동기화 → ACTIVE 전환 순서로 진행한다. Plugin 설정 `Agent Bot Team Name`은 팀 URL 이름을 사용하며 기본값과 빈 값은 `happyseyeon`이다. 이미 가입한 멤버는 유지하고 탈퇴한 membership은 복구한다. 조회·가입 실패 시 ERROR로 기록하며 재활성화로 같은 Bot을 재사용해 복구한다. 채널 가입은 별도로 수행한다.
+
+신규 가입, 기존 멤버 유지, 탈퇴 복구, 팀 없음·삭제, 조회/가입 오류, 재시도 시 Bot 중복 생성 방지를 Mock으로 검증했다. Go 서버 race 테스트와 Linux amd64 패키지 빌드가 통과했고 로컬 Plugin 설치·활성화를 확인했다. 실제 신규 Agent 생성으로 자동 가입을 확인하는 수동 테스트는 아직 수행하지 않았다.

@@ -18,6 +18,7 @@ import (
 // If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
 // copy appropriate for your types.
 type configuration struct {
+	BotTeamName    string
 	LangGraphURL   string
 	LangGraphToken string
 }

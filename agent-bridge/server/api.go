@@ -11,10 +11,11 @@ import (
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 
-	// Middleware to require that the user is logged in
-	router.Use(p.MattermostAuthorizationRequired)
+	// Internal callbacks authenticate the runtime independently of browser sessions.
+	router.HandleFunc("/api/internal/files/read", p.handleInternalFile).Methods(http.MethodPost)
 
 	apiRouter := router.PathPrefix("/api/v1").Subrouter()
+	apiRouter.Use(p.MattermostAuthorizationRequired)
 
 	apiRouter.HandleFunc("/approvals/{id}/{decision:approve|reject}", p.handleApproval).Methods(http.MethodPost)
 

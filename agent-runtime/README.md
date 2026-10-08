@@ -3,7 +3,7 @@
 Mattermost Plugin은 Agent KV 조회·메시지 라우팅·System Prompt·현재 메시지·Bot 게시를 담당한다.
 이 서비스는 LangGraph `START → prepare_context → generate → END`에서 Thread Context를 준비하고 Agent가 선택한 모델을 호출한다. 도구 호출과 승인 재개 경로도 제공한다.
 OpenAI·Gemini·Claude·Ollama 중 하나로 제한하거나 자동 전환하지 않는다.
-정책 기반 Tool Calling을 지원한다. 승인/interrupt, delegation, 장기 Memory, streaming 및 자동 fallback은 후속 범위다.
+정책 기반 Tool Calling을 지원한다. File Reader와 승인/interrupt/resume을 제공한다. delegation, 장기 Memory, streaming 및 자동 fallback은 후속 범위다.
 
 | Agent provider | Adapter | 실행 환경 설정 |
 |---|---|---|
@@ -151,6 +151,7 @@ Go가 KV Agent의 `tools` 전체를 `/v1/generate`에 전달한다. 설정 ID와
 |---|---|---|
 | debug-echo | debug_echo | 입력 문자열 반환; 연결 검증용 |
 | web-search | web_search | Brave Search 웹 검색, 제목/URL/snippet 최대 5개 |
+| file-reader | read_file | 현재 Post의 UTF-8 텍스트 첨부, 파일 읽기 Permission 필요 |
 
 네 Provider 모두 LangChain `bind_tools`와 동일한 LangGraph 실행 경로를 사용한다.
 실제 모델/로컬 모델 자체도 function calling을 지원해야 한다.
@@ -166,7 +167,7 @@ Provider metadata를 보존해 Gemini thought signature 등의 후속 호출 정
 
 `web-search`를 사용하려면 저장소 루트 `~/multi-agents/.env`에 `BRAVE_SEARCH_API_KEY`를 설정하고 런타임을 재생성한다.
 Agent KV에는 검색 키도 저장하지 않는다. 검색 서비스는 모델 Provider와 독립적이다.
-설정하지 않으면 검색 실패 ToolMessage가 반환된다. file-reader/pdf-reader/code-executor/vector-search는
+설정하지 않으면 검색 실패 ToolMessage가 반환된다. pdf-reader/code-executor/vector-search는
 UI의 향후 설정 항목으로 남아 있으며 Registry에 없으므로 실행되지 않는다.
 
 로그: agent_id, thread_id, tool_id, tool_call_id, 인자 필드명, status, duration_ms, 고정 error code.
@@ -221,3 +222,18 @@ Plugin 시작 시 접수됐지만 완료되지 않은 결정도 복구한다. Ru
 
 자동 테스트: `pytest -q`(agent-runtime), `go test -race ./server/...`(agent-bridge),
 `npm run check-types`, `npm run build`, `make dist`, `git diff --check`.
+
+
+## File Reader 설정 및 확인
+
+Agent 설정은 `tools.enabled=true`, `tools.allowed`에 `file-reader`, `permissions.files.read=true`가 필요하다. denied가 우선이며 require_confirmation은 기존 승인 흐름을 사용한다. Runtime의 루트 `.env`에 고정 Plugin base URL을 설정한다:
+
+```dotenv
+AGENT_BRIDGE_URL=http://mattermost:8065/plugins/com.seyeon.agentbridge
+```
+
+실제 Docker 서비스명/호스트에 맞게 바꾼다. 기존 `AGENT_RUNTIME_TOKEN`과 Plugin `LangGraphToken`은 같은 값을 사용하며 관리자 토큰은 필요하지 않다. 코드 변경 후 Plugin 패키지를 다시 빌드·설치하고 Runtime을 `up -d --build`로 재생성해야 한다. checkpoint volume은 유지한다.
+
+현재 Post의 첨부 metadata 최대 32개만 전달하며, Thread의 과거 첨부는 다시 첨부해야 한다. txt/md/csv/json/yaml/yml/log의 UTF-8 텍스트를 2 MiB까지 지원한다. MIME과 Post/file/channel 권한을 Plugin에서 검사한다. 결과는 남은 Context Budget과 20 KiB 내용/24 KiB 결과 제한을 적용하며 `truncated=true`를 표시한다. 경로·URL 다운로드, PDF/Office/OCR은 지원하지 않는다. 내용은 로그에 기록하지 않지만 ToolMessage로 SQLite checkpoint에는 남는다.
+
+실제 확인은 `project.md`에 Backend Go / Runtime Python LangGraph / Storage Mattermost KV / Model Gemini를 적어 **파일을 첨부한 같은 Post**에서 `@agent-test-agent 이 파일의 기술 스택을 정리해줘.`를 요청한다. 자동 실행과 승인/거절을 각각 확인하고 권한 false 시 접근이 차단되는지 검사한다. Mock 테스트 이후 사용자 DM 테스트에서 project.md 읽기·Gemini Thread 답변을 로그와 게시된 응답으로 확인했다. 로컬 Plugin도 최신 코드로 재배포했다.
