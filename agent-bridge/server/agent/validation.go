@@ -32,6 +32,9 @@ func Validate(a *Agent) error {
 	if strings.TrimSpace(a.Prompts.Identity) == "" {
 		return &ValidationError{"INVALID_PROMPT", "identity prompt is required"}
 	}
+	if a.Context.MaxContextTokens != nil && (*a.Context.MaxContextTokens < 512 || *a.Context.MaxContextTokens > 2000000) {
+		return &ValidationError{"INVALID_CONTEXT_BUDGET", "max_context_tokens must be between 512 and 2000000"}
+	}
 	denied := map[string]bool{}
 	allowed := map[string]bool{}
 	for _, id := range a.Tools.Denied {

@@ -30,6 +30,7 @@ func (r repo) AgentIDForBot(id string) (string, error) {
 func fixture() *agent.Agent {
 	a := agent.DefaultAgent()
 	a.ID = "researcher"
+	a.Context.MaxContextTokens = mm.NewPointer(int64(12000))
 	a.Tools = agent.AgentTools{Enabled: true, Allowed: []string{"debug-echo", "web-search"}, Denied: []string{"web-search"}, RequireConfirmation: []string{"debug-echo"}}
 	a.Lifecycle.Enabled = true
 	a.Runtime.Status = "ACTIVE"
@@ -93,6 +94,7 @@ func (f *fakeClient) Generate(ctx context.Context, r modelclient.GenerateRequest
 	require.Equal(f.t, "gemini-3-flash-preview", r.Model)
 	require.Equal(f.t, "researcher", r.AgentID)
 	require.Equal(f.t, fixture().Tools, r.Tools)
+	require.Equal(f.t, fixture().Context.MaxContextTokens, r.MaxContextTokens)
 	require.Equal(f.t, "root", r.RootPostID)
 	require.Equal(f.t, "current", r.PostID)
 	require.Len(f.t, r.Messages, 2)

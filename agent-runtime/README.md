@@ -1,7 +1,7 @@
 # Agent Bridge LangGraph Runtime
 
 Mattermost Plugin은 Agent KV 조회·메시지 라우팅·System Prompt·현재 메시지·Bot 게시를 담당한다.
-이 서비스는 LangGraph `START → generate → END`에서 Agent가 선택한 모델을 호출한다.
+이 서비스는 LangGraph `START → prepare_context → generate → END`에서 Thread Context를 준비하고 Agent가 선택한 모델을 호출한다. 도구 호출과 승인 재개 경로도 제공한다.
 OpenAI·Gemini·Claude·Ollama 중 하나로 제한하거나 자동 전환하지 않는다.
 정책 기반 Tool Calling을 지원한다. 승인/interrupt, delegation, 장기 Memory, streaming 및 자동 fallback은 후속 범위다.
 
@@ -119,9 +119,17 @@ Mattermost 게시 시각에 따른 정렬이나 Plugin queue의 영속 복구는
 이미 완료한 post.id를 재전송하면 checkpoint의 답변을 반환하여 모델을 다시 호출하지 않는다.
 Mattermost CreatePost 자체의 중복 방지와 실패한 게시의 자동 재시도는 별도 후속 범위다.
 
-모델 입력은 시스템 프롬프트 16 KiB + 완결된 대화 단위로 최근 20개 메시지/64 KiB (현재 Tool 실행 turn은 메시지 수 제한에서 제외)로 제한한다.
-전체 state와 checkpoint 이력은 유지하며 실제 tokenizer, retention, 요약은 아직 적용하지 않는다.
-최근 메시지 선택은 graph.model_context에 모아 이후 summarization을 붙일 수 있다.
+모델 입력은 `max_context_tokens`(null/생략 시 16000, 지정 시 512~2000000) 기준으로 제한한다.
+UTF-8 바이트당 1 Token을 보수적으로 추정하고 메시지 framing·Tool 스키마도 포함한다.
+입력 예산은 90%, 요약 임계치는 80%, Summary 크기는 최대 20%이며 출력 한도 `max_tokens`는 별도다.
+새 사용자 요청의 `prepare_context`에서 오래된 완결 Turn을 점진 요약한다.
+`summary`와 마지막 요약 메시지 ID `summarized_until`은 기존 SQLite checkpoint에 함께 저장된다.
+최근 완결 Turn과 현재 Turn을 우선 원문으로 유지하며, 예산 부족 시 최근 완결 Turn 전체를 요약할 수 있다.
+진행 중인 Tool Turn은 분할하지 않는다. 승인 대기/재개 중에는 요약을 수행하지 않는다.
+현재 Turn 자체가 너무 크면 LLM 호출 없이 입력 범위 축소 안내를 반환한다.
+요약 호출도 입력 예산을 지키며 큰 이력은 transcript chunk로 나눠 처리한다.
+요약 실패 시 기존 Summary/cursor를 보존하며 Provider별 정밀 tokenizer·retention은 후속 범위다.
+전체 state와 checkpoint 원문 이력은 유지한다. Thread Summary는 장기 Memory와 구분한다.
 Mattermost는 사용자에게 보이는 원본, checkpoint는 Agent 실행 상태다.
 Mattermost post 수정·삭제 또는 Agent 삭제는 checkpoint 자동 삭제로 연결하지 않는다.
 
@@ -149,7 +157,7 @@ Go가 KV Agent의 `tools` 전체를 `/v1/generate`에 전달한다. 설정 ID와
 `enabled=false`는 Tool을 노출하지 않는다. `allowed - denied`와 Registry의 교집합을 bind하며 policy_check와 실행 직전에 재검사한다.
 승인 필요 Tool도 모델에 노출되지만 interrupt 이후 사람의 승인 없이는 실행하지 않는다. 미등록 Tool은 차단한다.
 
-그래프: `START → generate → policy_check → tools → generate → END`.
+그래프: `START → prepare_context(필요 시 요약) → generate → policy_check → tools → generate → END`.
 Tool 실패/잘못된 인자/정책 차단은 비밀 정보를 제거한 ToolMessage로 반환하며 최종 답변을 다시 요청한다.
 요청당 호출 시도 최대 10회 (병렬 호출도 각각 계산), Tool당 12초 제한, 웹 요청 10초,
 검색 HTTP 응답 최대 1 MiB, Tool 결과 최대 24 KiB. 한도 이후에는 Tool을 더 실행하지 않고 그래프를 종료한다.

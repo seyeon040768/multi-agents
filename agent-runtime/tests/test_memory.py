@@ -134,7 +134,7 @@ async def test_context_window_bounded_without_deleting_checkpoints(tmp_path):
             data = turn(f"question {n}")
             data["post_id"] = f"{n:026d}"
             await invoke_turn(graph, GenerateRequest(**data))
-        assert len(model.calls[-1]) <= 21
+        assert len(model.calls[-1]) == 30  # Short history fits without count-based trimming.
         assert model.calls[-1][-1] == ("human", "question 14")
         state = await graph.aget_state({"configurable": {"thread_id": "mattermost:researcher:" + "r" * 26}})
         assert len(state.values["messages"]) == 30

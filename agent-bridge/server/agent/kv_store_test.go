@@ -196,6 +196,8 @@ func TestValidation(t *testing.T) {
 		{"prompt", func(a *Agent) { a.Prompts.Identity = " " }, "INVALID_PROMPT"},
 		{"provider", func(a *Agent) { a.Model.Provider = "unknown" }, "INVALID_MODEL"},
 		{"model", func(a *Agent) { a.Model.Name = "unknown" }, "INVALID_MODEL"},
+		{"context too small", func(a *Agent) { v := int64(511); a.Context.MaxContextTokens = &v }, "INVALID_CONTEXT_BUDGET"},
+		{"context too large", func(a *Agent) { v := int64(2000001); a.Context.MaxContextTokens = &v }, "INVALID_CONTEXT_BUDGET"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

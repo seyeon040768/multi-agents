@@ -4,7 +4,7 @@
 
 Mattermost Agent Bridge Plugin과 별도 Python LangGraph 실행 서비스로 Agent 관리부터 단일 Agent 텍스트 대화까지 제공한다.
 
-2026-10-07 기준으로 **KV CRUD → Mattermost Bot Provisioning → 단일 Agent 채팅 MVP**를 구현하고 로컬 Mattermost에 배포했다. 기존 Gemini Agent의 실제 DM 답변까지 검증했다.
+2026-10-08 코드 확인 기준으로 **Agent 관리·영속 저장 → Mattermost Bot 관리 → 단일 Agent 대화 → Thread Memory → 정책 기반 Tool Calling → 사람 승인/재개 → Token Budget·Thread 요약**까지 구현되어 있다. 2026-10-07까지의 기록에는 로컬 배포와 Gemini 실제 DM·검색·승인 재개 검증이 포함된다. 이번 Context 개발은 Mock 모델 기반 자동 테스트로 검증했으며, 외부 모델 호출과 Mattermost 수동 E2E는 다시 수행하지 않았다.
 
 - Agent 설정은 Mattermost Plugin KV Store에 영속 저장한다.
 - Modal을 열 때마다 서버 목록을 조회하고, 생성·수정·활성화·삭제 성공 후 목록을 다시 조회한다.
@@ -13,7 +13,20 @@ Mattermost Agent Bridge Plugin과 별도 Python LangGraph 실행 서비스로 Ag
 - 단일 Agent의 DM·mention을 처리하고 System Prompt와 현재 메시지를 LangGraph에 전달하고 SQLite checkpoint에서 이전 대화를 복원해 Bot으로 같은 Thread에 답변한다.
 - OpenAI·Gemini·Claude·Ollama 어댑터를 제공하며 Agent 설정의 Provider와 모델을 사용한다. 실제 외부 호출은 Gemini로 검증했다.
 - 인증 정보는 실행 서비스 환경 변수로 관리하고, 플러그인은 별도의 Runtime URL/Token으로 실행 서비스에 인증한다.
-- 정책 기반 Tool 실행을 지원한다. 승인/interrupt, 장기 Memory, Multi-Agent 위임 및 Task 처리는 후속 범위다.
+- Debug Echo와 Brave Web Search를 정책에 따라 실행한다. 승인 필요 Tool은 LangGraph interrupt로 중단하고 Mattermost 승인/거절 버튼과 인증된 resume API로 재개한다.
+- 장기 Memory, Multi-Agent 위임 및 Task 관리는 아직 구현하지 않았다.
+
+| 영역 | 현재 상태 |
+|---|---|
+| 관리 UI·KV 저장·서버 권한·버전 충돌 검사 | 구현 |
+| 실제 Bot 계정 및 프로필 Lifecycle | 구현 |
+| DM·mention 기반 단일 Agent 대화 | 구현 |
+| Agent/Thread별 SQLite checkpoint | 구현 |
+| Token Budget·점진적 Thread 요약·재시작 복원 | 구현 |
+| Debug Echo·Brave Web Search | 구현 |
+| 사람 승인·거절·만료·재개 및 접수된 결정 복구 | 구현 |
+| 파일·PDF·코드·Vector Search 실행 | 준비 중 |
+| Multi-Agent 협업·Task·장기 Memory | 미구현 |
 
 ## 2. 설정 구조의 기준
 
@@ -56,7 +69,7 @@ React webapp의 Slash Command Hook이 명령을 처리하고 화면을 연다. w
 
 삭제 버튼을 누르면 확인 화면을 표시한다. Agent 이름, ID, Long-term Memory 보존 선택, 취소 및 삭제 버튼을 제공한다.
 
-조회한 version을 포함한 DELETE 요청으로 DELETING 상태를 저장하고, Bot 영구 삭제와 reverse mapping 제거 후 KV Agent를 삭제한다. Bot 삭제 실패 시 ERROR와 Agent 정보를 유지하고 목록을 다시 조회한다. Memory 기능은 아직 구현되지 않았으며 보존 선택은 실제 데이터 처리에 영향을 주지 않는다.
+조회한 version을 포함한 DELETE 요청으로 DELETING 상태를 저장하고, Bot 영구 삭제와 reverse mapping 제거 후 KV Agent를 삭제한다. Bot 삭제 실패 시 ERROR와 Agent 정보를 유지하고 목록을 다시 조회한다. Long-term Memory와 Agent 삭제에 따른 SQLite checkpoint 정리는 구현하지 않았다. 보존 선택은 실제 데이터 처리에 영향을 주지 않으며 기존 Thread checkpoint도 자동 삭제하지 않는다.
 
 ## 4. 권한
 
@@ -81,7 +94,7 @@ webapp의 현재 사용자 역할에 따라 관리 UI를 표시한다. 일반 �
 | Role | type은 드롭다운, title은 텍스트, specialties는 JSON 배열, capabilities는 체크리스트 |
 | Model | provider/name은 연동 드롭다운, parameters는 숫자 입력, fallback.enabled는 체크박스, fallback.models는 JSON 배열 |
 | Prompts | identity, task_instruction, reasoning_instruction, collaboration_instruction, communication_instruction, output_instruction은 여러 줄 입력 |
-| Tools | enabled는 체크박스. allowed, denied, require_confirmation은 각각 체크리스트 |
+| Tools | enabled는 체크박스. 각 도구의 실행 정책을 가능·불가능·허가 필요 중 하나로 선택 |
 | Context | instructions는 여러 줄 입력, sources는 체크리스트, max_context_tokens는 숫자 입력 |
 | Collaboration | enabled와 기능별 권한은 체크박스, max_delegation_depth는 숫자 입력 |
 | Communication | default_message_type, mention_policy, reply_policy는 텍스트. allowed_message_types는 체크리스트 |
@@ -105,13 +118,13 @@ JSON 입력란은 JSON 문법과 배열/객체 형태를 검증한다. 개별 JS
 | `model.name` | 현재 Provider의 사전 모델 목록에서 선택 |
 | `prompts.identity` | 공백만 입력할 수 없음 |
 
-Agent ID는 생성 후 읽기 전용이다. 나머지 이름, 역할, 모델, 프롬프트와 정책은 설정 화면에서 수정할 수 있다. 숫자 항목의 범위 검증과 정책 간 정합성 검증은 후속 단계에서 보완한다.
+Agent ID는 생성 후 읽기 전용이다. 나머지 이름, 역할, 모델, 프롬프트와 정책은 설정 화면에서 수정할 수 있다. 서버는 allowed/denied 중복을 거부하고 require_confirmation이 allowed에 포함되는지 검증한다. 숫자 범위와 나머지 정책 간 정합성 검증은 후속 단계에서 보완한다.
 
 ### enabled 연동
 
 `enabled`를 가진 그룹에서 체크를 해제하면 같은 그룹의 나머지 입력 요소를 비활성화한다. 하위 그룹에도 적용하며, `enabled` 체크박스 자체는 다시 체크할 수 있도록 유지한다.
 
-- `tools.enabled` → 허용·금지·승인 필요 도구 체크리스트
+- `tools.enabled` → 도구별 실행 정책 선택 메뉴
 - `model.fallback.enabled` → 대체 모델 입력
 - `collaboration.enabled` → 협업 기능 체크박스 및 위임 깊이
 
@@ -141,21 +154,32 @@ model:
 
 기존 설정의 모델이 목록에 없으면 그 값을 표시하되 저장 전 등록된 모델을 다시 선택하게 한다. 모델 선택 UI는 API 연결이나 모델 실행 가능 여부를 확인하지 않는다.
 
-## 7. 체크리스트 목록
+## 7. 도구 정책 및 체크리스트 목록
 
-선택값은 각 필드의 문자열 배열로 유지한다. 사전 목록에 없는 기존 선택값도 추가 항목으로 표시해 보존한다.
+체크리스트 선택값은 각 필드의 문자열 배열로 유지한다. 도구는 단일 정책 선택 메뉴로 편집하며 저장 구조는 기존 세 배열을 유지한다. 사전 목록에 없는 기존 선택값도 추가 항목으로 표시해 보존한다.
 
 ### Tools (실행 및 향후 목록)
 
-`tools.allowed`, `tools.denied`, `tools.require_confirmation`에 같은 목록을 제공한다. 세 목록은 독립적으로 선택하며 중복 선택 시 denied가 우선하며 require_confirmation은 현재 자동 실행에서 제외한다.
+각 도구의 정책을 하나 선택한다. UI는 같은 도구가 allowed와 denied에 동시에 포함되지 않도록 갱신하며, 서버도 충돌을 거부한다.
 
-| 이름 | ID |
-|---|---|
-| Web Search | `web-search` |
-| File Reader | `file-reader` |
-| PDF Reader | `pdf-reader` |
-| Code Executor | `code-executor` |
-| Vector Search | `vector-search` |
+| UI 정책 | 저장 계약 | 실행 |
+|---|---|---|
+| 가능 · 자동 실행 | `allowed` 포함, `denied`·`require_confirmation` 제외 | 자동 실행 |
+| 불가능 | `allowed`·`require_confirmation` 제외, 정책 변경 시 `denied` 포함 | 실행 차단 |
+| 허가 필요 | `allowed`와 `require_confirmation` 포함, `denied` 제외 | 승인 요청 후 실행 |
+
+기본 목록이 비어 있는 도구는 불가능으로 표시한다. 런타임에서도 tools 비활성화, denied 포함 또는 allowed 미포함이면 실행을 차단한다. 승인 필요 도구는 모델에 제공하되 실제 실행 전에 중단한다. 실행 직전에 최신 정책을 다시 검사한다.
+
+| 이름 | ID | 실제 실행 구현 |
+|---|---|---|
+| Debug Echo | `debug-echo` | 구현 |
+| Web Search | `web-search` | 구현: Brave Search API, 검색 Key 필요 |
+| File Reader | `file-reader` | 준비 중 |
+| PDF Reader | `pdf-reader` | 준비 중 |
+| Code Executor | `code-executor` | 준비 중 |
+| Vector Search | `vector-search` | 준비 중 |
+
+미등록 도구는 설정에 보존되어도 실행되지 않는다. Context sources와 Capabilities의 체크리스트 선택은 해당 기능의 실제 구현을 의미하지 않는다.
 
 ### Context sources
 
@@ -240,7 +264,8 @@ lifecycle.updated_at
 | `agent-bridge/server/modelclient/` | Provider 공통 요청/응답 계약과 LangGraph HTTP client |
 | `agent-bridge/server/plugin.go`, `server/configuration.go` | 메시지 Hook·worker·취소 처리·Runtime URL/Token 설정 |
 | `agent-bridge/plugin.json` | 서버와 webapp bundle, Runtime URL/Token 설정 선언 |
-| `agent-runtime/agent_runtime/` | LangGraph 그래프·Provider 어댑터·인증된 HTTP 실행 API |
+| `agent-runtime/agent_runtime/` | LangGraph 그래프·Provider 어댑터·checkpoint·Tool Registry·인증된 generate/resume API |
+| `agent-bridge/server/approval.go` | 승인 KV·권한 검사·Mattermost 버튼·결정 재개·만료 및 복구 |
 | `agent-runtime/pyproject.toml`, `requirements*.lock` | Python 의존성과 검증한 버전 |
 | `agent-runtime/Dockerfile`, `compose.yaml` | 실행 서비스 이미지 및 Mattermost 네트워크 연결 |
 | `agent-runtime/tests/`, `agent-bridge/server/**/*test.go` | 외부 LLM 없는 단위 테스트와 메시지 처리 테스트 |
@@ -274,15 +299,16 @@ make dist
 
 ## 10. 향후 구현 항목
 
-다음 기능은 현재 구현에 포함하지 않는다. 다음은 Tool 승인/interrupt이며, 이후 tokenizer·요약·장기 Memory와 Agent 위임을 확장한다.
+다음 기능은 아직 구현하지 않았다. Tool 승인/interrupt/resume은 완료되어 후속 목록에서 제외한다.
 
-1. Thread Context 요약, tokenizer 기반 `max_context_tokens` 관리 및 장기 Memory
-2. Tool 승인/interrupt와 중앙 Model·Tool Registry의 동적 목록 조회
+1. Provider별 정밀 Tokenizer, Context retention 및 장기 Memory
+2. 중앙 Model·Tool Registry의 동적 목록 조회, 파일·PDF 읽기·코드 실행·Vector Search 구현
 3. Multi-Agent 협업·위임 및 Task 실행·취소
-4. Mattermost 게시 시각에 따른 실행 순서, 답변 게시 중복 방지 및 재시작 중 미완료 요청 복구
+4. Mattermost 게시 시각에 따른 실행 순서, 답변 게시 중복 방지 및 일반 대화의 미완료 요청 복구 (접수된 승인 결정 복구는 구현)
 5. 상세 정책 정합성·스키마 검증, 비용·실행 시간 제한, fallback·retry 정책 적용
 6. Channel membership 자동 관리, 생성 시 DM 자동 열기 및 Memory 보존·삭제
 7. YAML Import/Export, 복제, 검색·필터 및 Audit Log
+8. 승인 게시 outbox, 외부 쓰기 Tool의 정확히 한 번 실행, 다중 Runtime 프로세스 운영
 
 Agent 관리 데이터는 현재 Mattermost Plugin KV를 사용한다. 별도 PostgreSQL 저장 계층은 구현하지 않았다. UI에서 보존하는 도구·협업·행동 정책 전체가 실행 단계에 적용되는 것은 아니다.
 후속 구현에서도 `/agent create`와 `/agent list`를 UI 진입점으로 유지하고, 설정 구조는 `agent_definition.md`를 기준으로 한다.
@@ -318,7 +344,7 @@ PUT은 Agent의 lifecycle.version을 사용한다. enable/disable body는 `{"ver
 
 API는 요청을 1 MiB로 제한하고 알 수 없는 JSON 필드 및 타입 오류를 거부한다.
 모델 자격 증명은 Agent에 정의하지 않는다. Provider 인증 정보는 LangGraph 실행 서비스의 환경 변수로 관리한다.
-숫자 범위와 상세 정책 정합성 검증은 아직 구현하지 않았다.
+Tool allowed/denied 중복과 require_confirmation의 allowed 포함 조건을 검증한다. 숫자 범위와 나머지 상세 정책 정합성 검증은 아직 구현하지 않았다.
 
 ## 12. Mattermost Bot Provisioning
 
@@ -364,14 +390,14 @@ System·Bot·plugin-generated 메시지는 제외한다. 일반 채널 메시지
 채널의 후속 Thread 질문도 Agent를 mention해야 하며, Agent와의 DM Thread에서는 mention 없이 처리한다.
 
 역방향 KV로 Agent를 찾고 enabled=true, runtime=ACTIVE인 경우에만 실행한다.
-Go는 System Prompt와 현재 user 메시지만 전송한다. Agent mention은 제거한다.
+Go는 대화 이력 전체 대신 System Prompt와 현재 user 메시지를 전송하며, 모델·Tool 정책과 Agent/Thread/Post 식별자도 함께 전달한다. Agent mention은 제거한다.
 root_post_id는 답글의 root_id, 루트 메시지에서는 post.id를 사용한다.
 LangGraph는 `mattermost:{agent_id}:{root_post_id}`를 thread_id로 사용해 Agent/Thread별 state를 분리한다.
 MessagesState + AsyncSqliteSaver로 user/assistant를 누적하고 실행 서비스 재시작 후에도 복원한다.
 System Prompt와 모델 설정은 매 요청에서 갱신하고 checkpoint의 대화와 분리한다.
 현재 버전부터 처리한 메시지만 누적하며 기존 Mattermost Thread 기록은 자동 가져오지 않는다.
-모델 입력은 시스템 프롬프트 16 KiB와 완결된 대화 단위의 최근 20개 메시지/64 KiB (현재 Tool turn은 메시지 수 제한에서 제외)로 제한한다.
-전체 checkpoint 이력은 유지한다. tokenizer·요약·retention 및 파일 Context Source는 후속 범위다.
+모델 입력은 `context.max_context_tokens`에 따른 보수적 Token 추정 예산으로 제한한다. 임계치에서는 오래된 완결 대화를 점진적으로 요약하고 Summary·최근 원문·현재 요청을 함께 전달한다. 상세 규칙은 19절을 따른다.
+전체 checkpoint 이력은 유지한다. Provider별 정밀 tokenizer·retention 및 파일 Context Source는 후속 범위다.
 Mattermost post 수정·삭제와 checkpoint 삭제는 자동 연동하지 않는다.
 
 플러그인은 4개 worker와 최대 64개 대기 요청을 사용한다. 큐가 가득 차면 Bot으로 재시도 안내를 보낸다.
@@ -385,7 +411,7 @@ Provider 오류 로그에는 provider와 예외 타입만 남긴다.
 Mattermost 게시 자체의 중복 방지, 게시 시각 순서 보장 및 미완료 요청 복구는 후속 범위다.
 
 실행 서비스는 저장소의 `agent-runtime/`에서 Python LangGraph StateGraph로 구현한다.
-그래프는 START → generate → policy_check → tools → generate → END이며 AsyncSqliteSaver checkpointer를 사용한다. Tool이 없는 응답은 generate에서 END로 종료한다.
+그래프는 START → prepare_context(필요 시 요약) → generate → policy_check → tools → generate → END를 기본으로 하며 승인 필요 호출은 policy_check → approval에서 interrupt로 중단한다. 승인/거절 재개 후 tools → generate로 진행한다. AsyncSqliteSaver checkpointer를 사용하고 Tool이 없는 응답은 generate에서 END로 종료한다.
 Docker named volume에 DB를 보관한다. checkpoint 오류는 일반 503으로 처리하고 서비스는 계속 실행한다.
 단일 runtime worker로 운영하며 여러 프로세스 확장에는 분산 직렬화와 Postgres checkpointer가 필요하다.
 Agent의 provider/name 그대로 모델을 선택한다. openai, google(Gemini), anthropic(Claude), ollama(로컬)를 지원한다.
@@ -406,15 +432,16 @@ Agent KV에는 API Key를 저장하지 않는다. `.env`는 Git 및 Docker build
 | Gemini | `GOOGLE_API_KEY` 또는 `GEMINI_API_KEY` |
 | Claude | `ANTHROPIC_API_KEY` |
 | 로컬 Ollama | `OLLAMA_BASE_URL` |
+| Brave Web Search | `BRAVE_SEARCH_API_KEY` |
 | Mattermost Docker 네트워크 | `MATTERMOST_DOCKER_NETWORK` |
 
 Mattermost System Console의 Multi Agent Bridge Plugin 설정에서 `LangGraph Runtime URL`과
 `LangGraph Runtime Token`을 설정한다. Token은 실행 서비스의 `AGENT_RUNTIME_TOKEN`과 일치해야 한다.
 Runtime Token은 플러그인의 secret 설정이며 Provider API Key와 별개다.
-실행 서비스는 Token이 없으면 시작을 거부하고 `POST /v1/generate`에 Bearer 인증을 요구한다.
+실행 서비스는 Token이 없으면 시작을 거부하고 `POST /v1/generate`와 `POST /v1/resume`에 Bearer 인증을 요구한다.
 `GET /healthz`는 서비스 연결 확인용이다.
 
-현재 로컬 배포는 다음과 같다. 다른 환경에서는 주소와 네트워크를 환경에 맞게 지정한다.
+2026-10-07까지 기록된 로컬 배포 구성은 다음과 같다. 2026-10-08 문서 갱신 시 실행 상태를 다시 확인하지 않았다. 다른 환경에서는 주소와 네트워크를 환경에 맞게 지정한다.
 
 | 항목 | 현재 값 |
 |---|---|
@@ -445,12 +472,12 @@ Agent 생성 시 DM 자동 열기나 자동 채널 참여는 구현하지 않았
 - 해당 Thread의 Bot 답변이 한 개로 유지돼 자기 답변을 반복 처리하지 않음을 확인.
 - Plugin disable/enable 후 Agent의 ACTIVE 상태와 기존 Bot user_id/username이 유지됨을 확인.
 
-자동 검증도 완료했다.
+최신 완료 기록은 사람 승인 마일스톤(2026-10-07) 기준이다. 아래 결과는 기존 검증 기록이며 이번 문서 갱신에서 테스트를 재실행하지 않았다.
 
 | 검증 | 결과 |
 |---|---|
-| Go `go test -race ./server/...` | 통과: KV/CAS·권한·Bot 관리·Resolver·Prompt/Context·Orchestrator·Hook·HTTP·답변 게시 |
-| Python `pytest` | 13개 통과: 네 Provider 라우팅·SDK 생성·인증·timeout/cancel·오류 본문 비노출·Tool 호출 거부 |
+| Go `go test -race ./server/...` | 통과: KV/CAS·권한·Bot 관리·채팅·승인 인증·CAS 경쟁·만료/복구·버튼 갱신·Thread 답변 |
+| Python `pytest` | 61개 통과: Provider·checkpoint·Tool 정책·승인/거절·만료·재개·중복·호출 제한 (mock 기반) |
 | `npm run check-types` | 통과 |
 | `npm run build` | 통과 |
 | `make dist` | 통과: 5개 플랫폼 서버 바이너리와 webapp 패키징 |
@@ -460,10 +487,12 @@ Agent 생성 시 DM 자동 열기나 자동 채널 참여는 구현하지 않았
 자동 테스트에서는 외부 LLM을 호출하지 않고 mock을 사용한다.
 OpenAI·Claude·Ollama의 실제 인증 및 모델 응답, 채널 mention과 여러 차례의 실제 Thread 후속 대화는 추가 운영 확인 대상이다.
 Plugin 재활성화 후 연결 정보 유지까지 확인했으며 재활성화 뒤 새 질문의 실제 답변은 별도 확인 대상이다.
-상세 증거와 테스트 범위는 [채팅 MVP 검증 기록](agent_chat_validation.md)에 남겼다.
+추가 운영 확인에는 Mattermost 화면의 실제 승인/거절 버튼 동작이 포함된다. Runtime 직접 호출로는 Gemini 검색과 컨테이너 재생성 후 승인 재개를 확인했지만, 이는 Mattermost 버튼을 통한 전체 흐름 검증과 구분한다.
+
+초기 채팅 증거는 [채팅 MVP 검증 기록](agent_chat_validation.md), 이후 단계의 검증 기록은 아래 마일스톤을 참고한다.
 
 
-## 16. Thread Memory / LangGraph Checkpoint
+## 16. Thread Memory / LangGraph Checkpoint (구현·검증 이력)
 
 2026-10-07 구현: Agent/Thread별 MessagesState, SQLite 영속 checkpoint, 최신 메시지만 전달하는 HTTP 계약,
 동일 쓰레드 직렬화와 완료 post.id 답변 재사용을 추가했다.
@@ -480,7 +509,7 @@ Plugin 재활성화 후 연결 정보 유지까지 확인했으며 재활성화 
   Provider·모델·인증 설정은 그대로 유지했다. 이번 checkpoint 변경 이후 Mattermost에서 실제 후속 대화는 추가 확인이 필요하다.
 
 
-## Tool Calling 마일스톤 (2026-10-07)
+## 17. Tool Calling 마일스톤 (2026-10-07 구현·검증 이력)
 
 - Go Orchestrator가 저장된 Agent의 tools.enabled/allowed/denied/require_confirmation을 런타임에 전달한다.
 - Python ToolSpec Registry는 설정 ID와 모델 function name을 매핑한다: debug-echo → debug_echo,
@@ -490,14 +519,14 @@ Plugin 재활성화 후 연결 정보 유지까지 확인했으며 재활성화 
 - 호출 시도 10회 제한, Tool timeout, 안전한 오류 ToolMessage, 실행 로그를 구현한다.
 - ToolMessage와 provider metadata를 checkpoint에 보존한다. 완료 요청의 중복 실행은 기존 캐시 경로로 막는다.
 - 웹 검색은 Brave Search API이며 BRAVE_SEARCH_API_KEY는 런타임 환경변수로만 관리한다.
-- 승인 UI/interrupt/resume과 외부 쓰기 Tool은 이번 범위에 포함하지 않는다.
+- 이 Tool Calling 최초 마일스톤 당시 승인 UI/interrupt/resume은 제외했다. 이후 18절의 사람 승인 마일스톤에서 구현했다. 외부 쓰기 Tool은 여전히 미구현이다.
 
 자세한 설정과 제한은 [agent-runtime README](../agent-runtime/README.md#정책-기반-tool-calling)를 참고한다.
 
 검증 결과: Python 45개 테스트, Go race 테스트, npm 타입 검사/빌드, make dist 통과.
 로컬 Mattermost 및 runtime에 배포했다. Gemini 3.1 Flash-Lite 실제 runtime 호출은 HTTP 200이며,
 checkpoint의 `human → ai(tool_calls=debug_echo) → tool(success) → ai(final)`를 확인했다.
-실제 검색 서비스 호출은 검색 키 설정 후 확인해야 한다. Mattermost 화면에서 Tool 질문을 보낸 뒤
+이 마일스톤 당시 실제 검색 호출은 미확인이었고, 아래 검색 도구 수정 단계에서 성공을 확인했다. Mattermost 화면에서 Tool 질문을 보낸 뒤
 Bot Thread 답변을 확인하는 운영 검증도 별도이며, 자동 테스트는 설정 전달과 Bot Thread 게시 경로를 검증한다.
 
 모든 API 키와 런타임 설정은 저장소 루트 `.env`로 통일했다. `agent-runtime/.env`는 실행 설정에서 참조하지 않는다. 키 변경 후 runtime 컨테이너를 재생성한다.
@@ -516,7 +545,7 @@ checkpoint human → ai → tool → ai를 확인했다. 운영 검증용 별도
 Go race 테스트 및 배포 빌드, Python 46개 테스트, git diff --check 통과 후 로컬 서비스에 반영했다.
 
 
-## 보호된 Tool의 사람 승인 (2026-10-07)
+## 18. 보호된 Tool의 사람 승인 (2026-10-07 구현·검증 이력)
 
 - Provider 공통 ALLOW / DENY / REQUIRE_CONFIRMATION 정책을 적용했다. 승인 필요 Tool도 bind하고,
   실제 실행 직전 LangGraph interrupt로 정지한다. denied가 항상 우선한다.
@@ -545,3 +574,22 @@ checkpoint는 human → ai(tool call) → tool(success) → ai(final)이며 동�
 별도 새 요청의 전체 승인 재개는 성공했다. 검증용 checkpoint만 정리했다.
 실제 Mattermost 화면에서 버튼을 누르는 수동 확인은 README의 절차로 진행할 수 있다.
 `npm run check-types`, `npm run build`, `make dist`, `git diff --check`도 통과했으며 로컬 서비스에 반영했다.
+
+
+## 19. Token Budget 및 Thread Summary (2026-10-08)
+
+Go Orchestrator가 `context.max_context_tokens`를 Runtime 요청의 `max_context_tokens`로 전달한다. null 또는 생략 시 16,000을 사용하며 지정값은 512~2,000,000이다. 입력 예산은 설정값의 90%, 요약 목표 크기는 최대 20%, 자동 요약 임계치는 80%다. 모델 출력 제한은 기존 `model.parameters.max_tokens`로 별도 적용한다.
+
+`context/estimator.py`의 교체 가능한 TokenEstimator는 초기 버전에서 UTF-8 바이트당 1 Token으로 보수적으로 추정한다. 메시지 역할·Tool Call 인자·Tool Result·Provider metadata·메시지 framing과 바인딩할 Tool 스키마까지 계산한다. Provider tokenizer의 정확한 수치나 모델 자체 최대 context 크기를 조회하는 기능은 아니다.
+
+Graph 시작에 `prepare_context`를 실행한다. 짧은 대화는 별도 요약 호출 없이 전달한다. 임계치에 도달하면 기존 Summary와 아직 요약하지 않은 오래된 완결 Turn을 합쳐 압축한다. Summary와 `summarized_until` 메시지 ID는 AgentState의 일부로 기존 SQLite checkpoint에 저장한다. 전체 원문은 삭제하지 않으며, 모델 입력에서는 cursor 이전의 원문을 제외해 중복 요약을 방지한다.
+
+최근 완결 Turn 하나와 현재 Turn을 우선 원문으로 유지한다. 예산에 들어가지 않는 최근 완결 Turn은 전체 단위로 요약한다. 현재 사용자 메시지와 진행 중인 AI Tool Call·모든 Tool Result는 분할하거나 요약하지 않는다. Tool 반복 호출에서는 예산을 다시 확인하지만 요약하지 않는다. 현재 Turn 자체가 입력 예산을 초과하면 모델을 호출하지 않고 범위를 줄여 달라는 안내를 반환한다.
+
+요약용 모델은 동일 Provider/모델을 사용하되 Tool을 바인딩하지 않고 출력 한도를 줄인다. 큰 과거 이력은 요약 입력 예산에 맞춰 transcript를 나누어 점진적으로 처리한다. 설정 한도가 줄어 Summary가 커진 경우에도 기존 요약을 재압축한다. 모델이 요약 크기 지시를 지키지 않을 때 최종 길이를 제한하므로 일부 세부 정보가 생략될 수 있다. 요약 오류·취소 시 cursor를 진행시키지 않으며 기존 Summary를 보존한다. 전체 요청 timeout은 기존 80초를 유지한다.
+
+승인 대기 상태는 기존 interrupt 보호 로직이 새 요청을 차단한다. 승인·거절·만료 재개는 `prepare_context`를 거치지 않아 Pending Call과 Summary/cursor를 변경하지 않는다. 승인 처리가 끝난 뒤 다음 새 사용자 요청부터 필요한 요약을 수행한다.
+
+Mock 자동 테스트로 짧은/긴 대화, 점진 갱신과 중복 방지, 최근 원문 보존, 큰 요약 입력 분할, Summary 크기 제한·설정 축소, SQLite 재시작 복원, 완결 Tool Turn 보존, 승인 대기·거절 재개 보호, 요약 실패 재시도, 현재 입력 초과를 검증했다. Python 전체 70개 테스트와 Go 서버 전체 `go test -race ./server/...`가 통과했다. 실제 Gemini 호출 및 운영 배포는 이번 단계에서 수행하지 않았다.
+
+Thread Summary는 동일 Mattermost Thread의 대화 연속성을 위한 기능이다. Long-term Memory·File Reader·PDF Reader·Code Executor·Vector Search·Multi-Agent·Task·Audit Log는 이번 범위에서 추가하지 않았다. 다음 단계는 File Reader에 `tools` 정책과 `permissions.file_read`를 함께 적용하는 것이다.

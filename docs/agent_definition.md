@@ -213,6 +213,10 @@ agent:
     # - thread
     # - knowledge-base
 
+    # Runtime 입력 Context 예산. null이면 16000, 지정 시 512~2000000.
+    # 보수적 Token 추정으로 System·Summary·최근 원문·Tool 스키마를 계산한다.
+    # 입력에는 예산의 90%를 사용하고 10%는 여유분으로 남긴다.
+    # 모델 출력 한도는 model.parameters.max_tokens로 별도 관리한다.
     max_context_tokens: null
 
 

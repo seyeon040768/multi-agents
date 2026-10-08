@@ -31,6 +31,7 @@ class GenerateRequest(BaseModel):
     messages: list[Message] = Field(min_length=2, max_length=2)
     temperature: float = Field(ge=0, le=2)
     max_tokens: int = Field(ge=1, le=32768)
+    max_context_tokens: int | None = Field(default=None, ge=512, le=2000000)
     tools: ToolConfig = Field(default_factory=ToolConfig)
     top_p: float | None = Field(default=None, ge=0, le=1)
 

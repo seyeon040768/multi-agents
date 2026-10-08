@@ -16,6 +16,8 @@ func TestRuntimeHTTPContract(t *testing.T) {
 		require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 		var req GenerateRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		require.NotNil(t, req.MaxContextTokens)
+		require.EqualValues(t, 12000, *req.MaxContextTokens)
 		require.Equal(t, "researcher", req.AgentID)
 		require.Equal(t, "root", req.RootPostID)
 		require.Equal(t, "post", req.PostID)
@@ -27,7 +29,8 @@ func TestRuntimeHTTPContract(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &LangGraph{URL: server.URL, Token: "test-token"}
-	resp, err := client.Generate(context.Background(), GenerateRequest{Tools: agent.AgentTools{Enabled: true, Allowed: []string{"debug-echo"}, Denied: []string{"web-search"}, RequireConfirmation: []string{"debug-echo"}}, AgentID: "researcher", RootPostID: "root", PostID: "post", Provider: "anthropic", Model: "claude-sonnet-4-6"})
+	budget := int64(12000)
+	resp, err := client.Generate(context.Background(), GenerateRequest{MaxContextTokens: &budget, Tools: agent.AgentTools{Enabled: true, Allowed: []string{"debug-echo"}, Denied: []string{"web-search"}, RequireConfirmation: []string{"debug-echo"}}, AgentID: "researcher", RootPostID: "root", PostID: "post", Provider: "anthropic", Model: "claude-sonnet-4-6"})
 	require.NoError(t, err)
 	require.Equal(t, "answer", resp.Text)
 	ctx, cancel := context.WithCancel(context.Background())
